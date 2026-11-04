@@ -5,7 +5,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
   compressImage, toMarkdown, closestIn } from './editor.js';
 import { firstLine } from './importer.js';
 
-export const APP_VERSION = '1.1.1';
+export const APP_VERSION = '1.1.2';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -1026,7 +1026,22 @@ async function insertImage(file) {
 
 function registerSW() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW no registrado', err));
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(reg => { document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); }); })
+      .catch(err => console.warn('SW no registrado', err));
+    // Versión nueva publicada: recargar solo si no se está escribiendo en este momento.
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', async () => {
+      if (!hadController || reloading) return;
+      const tryReload = async () => {
+        if (saveTimer || document.activeElement === el.editor) { setTimeout(tryReload, 5000); return; }
+        reloading = true;
+        await flushSave();
+        location.reload();
+      };
+      tryReload();
+    });
   }
 }
 

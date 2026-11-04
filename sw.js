@@ -1,6 +1,6 @@
 // Service worker: deja la app disponible sin conexión.
 // Al publicar cambios, sube el número de VERSION para que los dispositivos tomen la nueva versión.
-const VERSION = 'apuntes-v1.1.1';
+const VERSION = 'apuntes-v1.1.2';
 const SHELL = [
   './', './index.html', './app.css', './config.js', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/sync.js', './js/editor.js', './js/importer.js',
@@ -39,7 +39,8 @@ self.addEventListener('fetch', (e) => {
   // Archivos propios: red primero (para recibir actualizaciones), caché si no hay conexión.
   if (url.origin === self.location.origin) {
     e.respondWith((async () => {
-      const network = fetch(req).then(async (res) => {
+      // no-cache: revalida con el servidor (GitHub Pages guarda copias 10 min) para recibir las versiones nuevas al tiro.
+      const network = fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }).then(async (res) => {
         if (res.ok) await (await caches.open(VERSION)).put(req, res.clone());
         return res;
       });
