@@ -5,7 +5,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
   compressImage, toMarkdown, closestIn } from './editor.js';
 import { firstLine } from './importer.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -69,6 +69,9 @@ function nbTile(nb) {
 }
 
 const isAlive = (n) => n && !n.deleted;
+// Las plantillas de UpNote viven en su propia libreta y no se cuentan en "Todas las notas" (igual que en UpNote).
+const TEMPLATES_NB = 'upnote-plantillas';
+const isTemplate = (n) => (n.notebook_ids || []).includes(TEMPLATES_NB);
 const isNarrow = () => matchMedia('(max-width: 760px)').matches;
 const isDrawer = () => matchMedia('(max-width: 1100px)').matches;
 
@@ -253,7 +256,7 @@ function descendantIds(id) {
 
 function renderSidebar() {
   const alive = aliveNotes();
-  $('#cntAll').textContent = alive.length || '';
+  $('#cntAll').textContent = alive.filter(n => !isTemplate(n)).length || '';
   $('#cntFav').textContent = alive.filter(n => n.bookmarked).length || '';
   $('#cntTrash').textContent = [...state.notes.values()].filter(n => isAlive(n) && n.trashed).length || '';
 
@@ -312,6 +315,7 @@ function viewNotes() {
   if (v.type === 'trash') list = all.filter(n => n.trashed);
   else {
     list = all.filter(n => !n.trashed);
+    if (v.type === 'all') list = list.filter(n => !isTemplate(n));
     if (v.type === 'fav') list = list.filter(n => n.bookmarked);
     else if (v.type === 'notebook') {
       const ids = childrenOf(v.id).length ? new Set([v.id]) : descendantIds(v.id);
