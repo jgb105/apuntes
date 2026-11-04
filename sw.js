@@ -1,6 +1,6 @@
 // Service worker: deja la app disponible sin conexión.
 // Al publicar cambios, sube el número de VERSION para que los dispositivos tomen la nueva versión.
-const VERSION = 'apuntes-v1.0.0';
+const VERSION = 'apuntes-v1.1.0';
 const SHELL = [
   './', './index.html', './app.css', './config.js', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/sync.js', './js/editor.js', './js/importer.js',

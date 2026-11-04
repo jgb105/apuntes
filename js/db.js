@@ -43,6 +43,11 @@ export async function getAll(store) {
   return reqP(db.transaction(store).objectStore(store).getAll());
 }
 
+export async function getAllKeys(store) {
+  const db = await openDB();
+  return reqP(db.transaction(store).objectStore(store).getAllKeys());
+}
+
 export async function get(store, id) {
   const db = await openDB();
   return reqP(db.transaction(store).objectStore(store).get(id));

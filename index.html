@@ -69,7 +69,7 @@
         </div>
         <ul class="nav tree" id="notebookTree"></ul>
 
-        <div class="side-section"><span>Etiquetas</span></div>
+        <div class="side-section" id="tagSection"><span>Etiquetas</span></div>
         <ul class="nav" id="tagList"></ul>
       </nav>
 
@@ -80,15 +80,16 @@
     </aside>
 
     <section id="listPane" class="list-pane" aria-label="Notas">
-      <header class="pane-head">
-        <button class="icon-btn only-narrow" id="btnMenu" aria-label="Menú"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <header class="pane-head list-head">
+        <button class="icon-btn round only-narrow" id="btnMenu" aria-label="Menú"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h2 id="listTitle">Todas las notas</h2>
-        <button class="icon-btn accent" id="btnNewNote" title="Nueva nota (Alt+N)" aria-label="Nueva nota"><svg viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+        <button class="icon-btn round only-narrow sync-mini" id="btnSyncMini" aria-label="Estado de sincronización" title="Estado de sincronización"><i class="dot"></i></button>
+        <button class="icon-btn accent only-wide" id="btnNewNote" title="Nueva nota (Alt+N)" aria-label="Nueva nota"><svg viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
       </header>
       <div class="list-tools">
         <div class="search">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-          <input id="search" type="search" placeholder="Buscar" aria-label="Buscar notas" autocomplete="off">
+          <input id="search" type="search" placeholder="Buscar" aria-label="Buscar notas" autocomplete="off" enterkeyhint="search">
         </div>
         <select id="sort" aria-label="Ordenar">
           <option value="updated">Editadas</option>
@@ -100,8 +101,25 @@
         <span>Las notas de la papelera no aparecen en otras vistas.</span>
         <button class="btn sm danger" id="btnEmptyTrash">Vaciar</button>
       </div>
-      <ul id="noteList" class="note-list"></ul>
-      <p id="listEmpty" class="list-empty hidden">No hay notas aquí.</p>
+      <div class="list-scroll" id="listScroll">
+        <ul id="subNbs" class="sub-nbs"></ul>
+        <ul id="noteList" class="note-list"></ul>
+        <p id="listEmpty" class="list-empty hidden">No hay notas aquí.</p>
+      </div>
+      <nav class="bottom-bar" aria-label="Acciones">
+        <button class="icon-btn" id="btnBooks" aria-label="Libretas"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3Z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg></button>
+        <button class="fab" id="btnFab" aria-label="Nueva nota"><svg viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+        <button class="icon-btn" id="btnListMore" aria-label="Más opciones"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+        <div class="menu up hidden" id="listMenu" role="menu">
+          <span class="menu-label">Ordenar por</span>
+          <button data-sort="updated" role="menuitemradio">Fecha de edición</button>
+          <button data-sort="created" role="menuitemradio">Fecha de creación</button>
+          <button data-sort="title" role="menuitemradio">Título (A–Z)</button>
+          <hr>
+          <button data-lact="sync" role="menuitem">Sincronizar ahora</button>
+          <button data-lact="settings" role="menuitem">Ajustes</button>
+        </div>
+      </nav>
     </section>
 
     <main id="editorPane" class="editor-pane" aria-label="Editor">
@@ -219,6 +237,11 @@
       <menu><button value="cancel" class="btn ghost" id="impCancel">Cerrar</button><button type="button" class="btn primary" id="impRun">Importar</button></menu>
     </form>
   </dialog>
+
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-label="Imagen">
+    <div class="lb-scroll" id="lbScroll"><img id="lbImg" alt=""></div>
+    <button class="icon-btn round lb-close" id="lbClose" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
 
   <input type="file" id="imgInput" accept="image/*" hidden>
   <input type="file" id="restoreInput" accept=".json,application/json" hidden>

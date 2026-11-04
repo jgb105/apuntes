@@ -27,6 +27,24 @@ export function sanitize(html) {
         else if (n === 'style' && /expression|url\s*\(|javascript:/i.test(v)) el.removeAttribute(attr.name);
       }
       if (el.tagName === 'A') { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer'); }
+      if (el.tagName === 'IMG' && !el.hasAttribute('data-file')) {
+        const src = el.getAttribute('src') || '';
+        const alt = el.getAttribute('alt') || '';
+        // Emojis que UpNote guardaba como imagen de Google: se muestran como texto (funciona sin conexión).
+        if (/fonts\.gstatic\.com\/s\/e\/notoemoji/i.test(src) && alt && alt.length <= 8) {
+          el.replaceWith(doc.createTextNode(alt));
+          continue;
+        }
+        // Imágenes que nunca llegaron a la nube de UpNote: aviso en vez de una imagen rota.
+        if (/^https?:\/\/localhost:9425\//i.test(src) || !src) {
+          const ph = doc.createElement('span');
+          ph.className = 'img-missing';
+          ph.setAttribute('contenteditable', 'false');
+          ph.textContent = 'Imagen no disponible: no venía en el respaldo de UpNote.';
+          el.replaceWith(ph);
+          continue;
+        }
+      }
       walk(el);
     }
   };
@@ -39,6 +57,9 @@ export function serialize(editor) {
   const clone = editor.cloneNode(true);
   for (const img of clone.querySelectorAll('img[data-file]')) img.removeAttribute('src');
   for (const a of clone.querySelectorAll('a[data-file]')) a.setAttribute('href', '#');
+  for (const x of clone.querySelectorAll('[data-ephemeral]')) x.remove();
+  for (const img of clone.querySelectorAll('img.loading, img.wide')) img.classList.remove('loading', 'wide');
+  for (const x of clone.querySelectorAll('[class=""]')) x.removeAttribute('class');
   return clone.innerHTML;
 }
 

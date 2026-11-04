@@ -60,17 +60,61 @@ export async function signOut() {
   user = null;
 }
 
+// Tiempo real: el servidor avisa de cada cambio y se baja al instante. Si el canal se cae
+// (celular suspendido, cambio de red), se reconecta solo y se hace una sincronización completa.
+let rtState = 'closed';
+let rtRetry = null;
+let rtDelay = 1000;
+
 export function startRealtime() {
   if (!client || !user || channel) return;
-  channel = client.channel('apuntes-cambios');
+  rtState = 'connecting';
+  const ch = client.channel(`apuntes-${user.id}`);
   for (const table of TABLES) {
-    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => schedulePull(600));
+    ch.on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, () => schedulePull(250));
   }
-  channel.subscribe();
+  ch.subscribe((st) => {
+    if (channel !== ch) return;
+    if (st === 'SUBSCRIBED') {
+      const wasDown = rtState !== 'connecting';
+      rtState = 'joined';
+      rtDelay = 1000;
+      if (wasDown) schedulePull(100); // lo que cambió mientras estaba desconectado
+      else schedulePull(300);
+    } else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') {
+      rtState = 'down';
+      restartRealtimeLater();
+    }
+  });
+  channel = ch;
 }
 
+function restartRealtimeLater() {
+  clearTimeout(rtRetry);
+  rtRetry = setTimeout(() => {
+    stopRealtime();
+    if (navigator.onLine && document.visibilityState !== 'hidden') startRealtime();
+  }, rtDelay);
+  rtDelay = Math.min(rtDelay * 2, 30_000);
+}
+
+// Llamar al volver a la app o recuperar la red.
+export function ensureRealtime() {
+  if (!client || !user) return;
+  const socketOk = client.realtime?.isConnected?.() ?? true;
+  if (!channel || rtState === 'down' || rtState === 'closed' || !socketOk) {
+    stopRealtime();
+    rtDelay = 1000;
+    startRealtime();
+  }
+}
+
+export function realtimeState() { return rtState; }
+
 function stopRealtime() {
-  if (channel) { client.removeChannel(channel); channel = null; }
+  clearTimeout(rtRetry);
+  if (channel) { const ch = channel; channel = null; client.removeChannel(ch); }
+  rtState = 'closed';
 }
 
 export function schedulePush(ms = 1500) {
@@ -189,18 +233,49 @@ export function filePrefix() {
   return user ? user.id : 'local';
 }
 
+// Lista de adjuntos por subir (evita recorrer todas las imágenes guardadas en cada sincronización).
+async function pendingFiles() {
+  let list = await db.metaGet('pending_files');
+  if (!Array.isArray(list)) { // primera vez con esta versión: revisar una sola vez
+    list = [];
+    for (const id of await db.getAllKeys('files')) {
+      if (String(id).startsWith('thumb:')) continue;
+      const f = await db.get('files', id);
+      if (f?.dirty) list.push(id);
+    }
+    await db.metaSet('pending_files', list);
+  }
+  return list;
+}
+
 async function pushFiles() {
-  const files = (await db.getAll('files')).filter(f => f.dirty && !f.id.startsWith('local/'));
-  for (const f of files) {
-    const { error } = await client.storage.from(BUCKET)
-      .upload(f.id, f.blob, { upsert: true, contentType: f.blob.type || 'application/octet-stream' });
-    if (error) throw error;
-    await db.put('files', { ...f, dirty: 0 });
+  const list = await pendingFiles();
+  if (!list.length) return;
+  const done = new Set();
+  const forget = async () => {
+    const cur = (await db.metaGet('pending_files')) || [];
+    await db.metaSet('pending_files', cur.filter(id => !done.has(id)));
+  };
+  try {
+    for (const id of list) {
+      if (String(id).startsWith('local/')) continue;
+      const f = await db.get('files', id);
+      if (!f || !f.dirty) { done.add(id); continue; }
+      const { error } = await client.storage.from(BUCKET)
+        .upload(f.id, f.blob, { upsert: true, contentType: f.blob.type || 'application/octet-stream' });
+      if (error) throw error;
+      await db.put('files', { ...f, dirty: 0 });
+      done.add(id);
+    }
+  } finally {
+    await forget();
   }
 }
 
 export async function saveFile(path, blob) {
   await db.put('files', { id: path, blob, dirty: 1, name: blob.name || '' });
+  const list = await pendingFiles();
+  if (!list.includes(path)) await db.metaSet('pending_files', [...list, path]);
   const url = URL.createObjectURL(blob);
   urlCache.set(path, url);
   return url;
@@ -236,25 +311,82 @@ export async function migrateImportedFiles(onProgress = () => {}) {
   return moved;
 }
 
-export async function fileURL(path) {
-  if (urlCache.has(path)) return urlCache.get(path);
-  let rec = await db.get('files', path);
-  if (!rec && client && user && navigator.onLine) {
+// Blob de un adjunto: primero el guardado en el dispositivo; si no está, se descarga y se guarda.
+const inflight = new Map();
+export async function fileBlob(path) {
+  const rec = await db.get('files', path);
+  if (rec) return rec.blob;
+  if (!client || !user || !navigator.onLine) return null;
+  if (inflight.has(path)) return inflight.get(path);
+  const p = (async () => {
     const { data, error } = await client.storage.from(BUCKET).download(path);
-    if (!error) {
-      rec = { id: path, blob: data, dirty: 0 };
-      await db.put('files', rec);
-    } else {
-      // Puede ser un archivo migrado que aún no se mueve al almacenamiento.
+    let blob = data;
+    if (error) {
       const { data: row } = await client.from('import_files').select('mime,content_b64').eq('path', path).maybeSingle();
       if (!row) throw error;
       const bin = Uint8Array.from(atob(row.content_b64), c => c.charCodeAt(0));
-      rec = { id: path, blob: new Blob([bin], { type: row.mime }), dirty: 0 };
-      await db.put('files', rec);
+      blob = new Blob([bin], { type: row.mime });
     }
+    await db.put('files', { id: path, blob, dirty: 0 });
+    return blob;
+  })();
+  inflight.set(path, p);
+  try { return await p; } finally { inflight.delete(path); }
+}
+
+// Miniatura (≈200 px) guardada aparte para que la lista cargue rápido.
+const thumbCache = new Map();
+export async function thumbURL(path) {
+  if (thumbCache.has(path)) return thumbCache.get(path);
+  const key = `thumb:${path}`;
+  let rec = await db.get('files', key);
+  if (!rec) {
+    const blob = await fileBlob(path);
+    if (!blob) return null;
+    let small = blob;
+    try {
+      const bmp = await createImageBitmap(blob);
+      const scale = Math.min(1, 220 / Math.min(bmp.width, bmp.height));
+      const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      bmp.close?.();
+      small = await new Promise(res => c.toBlob(b => res(b || blob), 'image/jpeg', 0.78));
+    } catch { /* si no se puede achicar, se usa la original */ }
+    rec = { id: key, blob: small, dirty: 0 };
+    await db.put('files', rec);
   }
-  if (!rec) return null;
   const url = URL.createObjectURL(rec.blob);
+  thumbCache.set(path, url);
+  return url;
+}
+
+// Descarga en segundo plano los adjuntos que faltan en este dispositivo (de a 3 a la vez).
+let prefetching = false;
+export async function prefetchFiles(paths) {
+  if (prefetching || !client || !user || !navigator.onLine || navigator.connection?.saveData) return;
+  prefetching = true;
+  try {
+    const have = new Set(await db.getAllKeys('files'));
+    const queue = paths.filter(p => !have.has(p));
+    const worker = async () => {
+      while (queue.length && navigator.onLine) {
+        const p = queue.shift();
+        try { await fileBlob(p); } catch { /* se reintenta en la próxima pasada */ }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+  } finally {
+    prefetching = false;
+  }
+}
+
+export async function fileURL(path) {
+  if (urlCache.has(path)) return urlCache.get(path);
+  const blob = await fileBlob(path);
+  if (!blob) return null;
+  const url = URL.createObjectURL(blob);
   urlCache.set(path, url);
   return url;
 }

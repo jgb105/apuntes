@@ -5,7 +5,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
   compressImage, toMarkdown, closestIn } from './editor.js';
 import { firstLine } from './importer.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -17,6 +17,13 @@ const el = {
   moreMenu: $('#moreMenu'), tagChips: $('#tagChips'), tagInput: $('#tagInput'), noteDates: $('#noteDates'),
   trashBanner: $('#trashBanner'), trashBar: $('#trashBar'), toolbar: $('#toolbar'),
   syncStatus: $('#syncStatus'), syncText: $('#syncText'), toast: $('#toast'),
+  subNbs: $('#subNbs'), listScroll: $('#listScroll'), btnMenu: $('#btnMenu'), syncMini: $('#btnSyncMini'),
+  listMenu: $('#listMenu'), lightbox: $('#lightbox'), lbImg: $('#lbImg'), lbScroll: $('#lbScroll'),
+};
+const ICON = {
+  menu: '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  back: '<svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>',
 };
 
 const state = {
@@ -47,21 +54,34 @@ function toast(msg, ms = 2400) {
 function fmtDate(ms) {
   const d = new Date(ms);
   const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  if (sameDay) return d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const time = d.toLocaleTimeString('es-CL', { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === today.toDateString()) return `Hoy, ${time}`;
   const opts = d.getFullYear() === today.getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
-  return d.toLocaleDateString('es-CL', opts);
+  return `${d.toLocaleDateString('es-CL', opts)}, ${time}`;
+}
+
+// Ícono de color para cada libreta (estable según su id).
+function nbTile(nb) {
+  let h = 0;
+  for (const c of nb.id) h = (h * 31 + c.charCodeAt(0)) % 360;
+  const letter = esc((nb.title || '?').trim().charAt(0) || '?');
+  return `<i class="nb-tile" style="--h:${h}" aria-hidden="true">${letter}</i>`;
 }
 
 const isAlive = (n) => n && !n.deleted;
 const isNarrow = () => matchMedia('(max-width: 760px)').matches;
 const isDrawer = () => matchMedia('(max-width: 1100px)').matches;
 
+// Otras pestañas/ventanas abiertas en el mismo dispositivo se enteran al instante de los cambios.
+const tabs = 'BroadcastChannel' in window ? new BroadcastChannel('apuntes') : null;
+function tellTabs() { try { tabs?.postMessage({ type: 'changed' }); } catch { /* nada */ } }
+
 async function persist(store, rec) {
   rec._dirty = 1;
   (store === 'notes' ? state.notes : state.notebooks).set(rec.id, rec);
   await db.put(store, rec);
   sync.schedulePush();
+  tellTabs();
 }
 
 // ---------------- Arranque ----------------
@@ -156,21 +176,25 @@ async function startApp(offlineFallback = false) {
   renderAll();
   if (state.mode === 'cloud') {
     sync.on('status', setSyncStatus);
-    sync.on('change', onRemoteChange);
+    sync.on('change', () => { onRemoteChange(); tellTabs(); prefetchSoon(); });
     sync.startRealtime();
     sync.syncNow().then(() => sync.migrateImportedFiles((n, total) => setSyncStatus('syncing', '', `Moviendo imágenes migradas ${n}/${total}…`)))
-      .then((n) => { if (n) { setSyncStatus('ok'); toast(`${n} imágenes migradas listas`); } });
-    setInterval(() => sync.syncNow(), 60_000);
-    addEventListener('online', () => sync.syncNow());
+      .then((n) => { if (n) { setSyncStatus('ok'); toast(`${n} imágenes migradas listas`); } })
+      .finally(() => prefetchSoon(1500));
+    setInterval(() => sync.syncNow(), 30_000);
+    addEventListener('online', () => { sync.ensureRealtime(); sync.syncNow(); });
     addEventListener('offline', () => setSyncStatus('offline'));
+    addEventListener('focus', () => { sync.ensureRealtime(); sync.syncNow(); });
+    addEventListener('pageshow', () => { sync.ensureRealtime(); sync.syncNow(); });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') sync.syncNow();
+      if (document.visibilityState === 'visible') { sync.ensureRealtime(); sync.syncNow(); }
       else flushSave();
     });
   } else {
     setSyncStatus(offlineFallback ? 'offline' : 'local');
   }
   addEventListener('pagehide', flushSave);
+  if (tabs) tabs.onmessage = (e) => { if (e.data?.type === 'changed') onRemoteChange(); };
   const last = localStorage.getItem('apuntes_last_note');
   if (!isNarrow() && last && state.notes.get(last) && isAlive(state.notes.get(last))) openNote(last);
 }
@@ -196,7 +220,8 @@ async function onRemoteChange() {
 }
 
 function setSyncStatus(s, detail, custom) {
-  if (custom) { el.syncStatus.dataset.s = s; el.syncText.textContent = custom; return; }
+  el.syncMini.dataset.s = s;
+  if (custom) { el.syncStatus.dataset.s = s; el.syncText.textContent = custom; el.syncMini.title = custom; return; }
   const labels = {
     ok: 'Sincronizado', syncing: 'Sincronizando…', offline: 'Sin conexión · guardado en el dispositivo',
     error: `Error: ${detail || ''}`, local: 'Solo en este dispositivo',
@@ -204,6 +229,7 @@ function setSyncStatus(s, detail, custom) {
   el.syncStatus.dataset.s = s;
   el.syncText.textContent = labels[s] || s;
   el.syncStatus.title = labels[s] || s;
+  el.syncMini.title = labels[s] || s;
 }
 
 // ---------------- Barra lateral ----------------
@@ -236,7 +262,6 @@ function renderSidebar() {
 
   const chevron = '<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>';
   const dots = '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>';
-  const book = '<svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3Z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>';
   const build = (parentId) => childrenOf(parentId).map(nb => {
     const kids = childrenOf(nb.id);
     const open = state.openNbs.has(nb.id);
@@ -244,7 +269,7 @@ function renderSidebar() {
     return `<li>
       <div class="nb-row">
         <button class="twisty ${kids.length ? '' : 'leaf'} ${open ? 'open' : ''}" data-twisty="${esc(nb.id)}" aria-label="Expandir">${chevron}</button>
-        <button class="nb ${active ? 'active' : ''}" data-nb="${esc(nb.id)}">${book}<span>${esc(nb.title)}</span><em>${counts.get(nb.id) || ''}</em></button>
+        <button class="nb ${active ? 'active' : ''}" data-nb="${esc(nb.id)}">${nbTile(nb)}<span>${esc(nb.title)}</span><em>${counts.get(nb.id) || ''}</em></button>
         <button class="icon-btn sm nb-menu" data-nbmenu="${esc(nb.id)}" aria-label="Opciones de libreta">${dots}</button>
       </div>
       ${kids.length && open ? `<ul>${build(nb.id)}</ul>` : ''}
@@ -257,18 +282,25 @@ function renderSidebar() {
   const hash = '<svg viewBox="0 0 24 24"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"/></svg>';
   el.tagList.innerHTML = [...tagCount.keys()].sort(collator.compare).map(t =>
     `<li><button data-tag="${esc(t)}" class="${state.view.type === 'tag' && state.view.id === t ? 'active' : ''}">${hash}<span>${esc(t)}</span><em>${tagCount.get(t)}</em></button></li>`
-  ).join('') || '<li class="muted small" style="padding:4px 10px">Sin etiquetas</li>';
+  ).join('');
+  $('#tagSection').classList.toggle('hidden', !tagCount.size);
 
   for (const b of document.querySelectorAll('#navFixed button')) b.classList.toggle('active', b.dataset.nav === state.view.type);
 }
 
 function setView(view) {
   state.view = view;
+  if (view.type === 'notebook') { // abrir en el árbol las libretas que la contienen
+    let p = state.notebooks.get(view.id)?.parent_id;
+    while (p && !state.openNbs.has(p)) { state.openNbs.add(p); p = state.notebooks.get(p)?.parent_id; }
+    saveOpenNbs();
+  }
   state.query = '';
   el.search.value = '';
   el.app.classList.remove('nav-open');
   renderSidebar();
   renderList();
+  el.listScroll.scrollTop = 0;
   if (isNarrow()) el.app.dataset.view = 'list';
 }
 
@@ -282,11 +314,15 @@ function viewNotes() {
     list = all.filter(n => !n.trashed);
     if (v.type === 'fav') list = list.filter(n => n.bookmarked);
     else if (v.type === 'notebook') {
-      const ids = descendantIds(v.id);
+      const ids = childrenOf(v.id).length ? new Set([v.id]) : descendantIds(v.id);
       list = list.filter(n => (n.notebook_ids || []).some(id => ids.has(id)));
     } else if (v.type === 'tag') list = list.filter(n => (n.tags || []).includes(v.id));
   }
   const q = norm(state.query.trim());
+  if (q && v.type === 'notebook' && childrenOf(v.id).length) {
+    const ids = descendantIds(v.id);
+    list = all.filter(n => !n.trashed && (n.notebook_ids || []).some(id => ids.has(id)));
+  }
   if (q) {
     const words = q.split(/\s+/);
     list = list.filter(n => { const hay = norm(`${n.title}\n${n.text}\n${(n.tags || []).join(' ')}`); return words.every(w => hay.includes(w)); });
@@ -339,9 +375,35 @@ function snippetFor(n) {
   return s.slice(0, 220);
 }
 
+function firstImage(n) {
+  const m = /<img[^>]*data-file="([^"]+)"/i.exec(n.html || '');
+  return m ? m[1] : null;
+}
+function imageCount(n) { return ((n.html || '').match(/<img[^>]*data-file=/gi) || []).length; }
+
+function renderHeader() {
+  const v = state.view;
+  const nb = v.type === 'notebook' ? state.notebooks.get(v.id) : null;
+  const parent = nb?.parent_id ? state.notebooks.get(nb.parent_id) : null;
+  const back = !!(parent && isAlive(parent));
+  el.btnMenu.innerHTML = back ? ICON.back : ICON.menu;
+  el.btnMenu.setAttribute('aria-label', back ? `Volver a ${parent.title}` : 'Menú');
+  el.btnMenu.dataset.back = back ? parent.id : '';
+}
+
+function renderSubNotebooks() {
+  const v = state.view;
+  if (v.type !== 'notebook' || state.query.trim()) { el.subNbs.innerHTML = ''; return; }
+  const counts = new Map();
+  for (const n of aliveNotes()) for (const id of n.notebook_ids || []) counts.set(id, (counts.get(id) || 0) + 1);
+  el.subNbs.innerHTML = childrenOf(v.id).map(nb => `<li><button data-subnb="${esc(nb.id)}">${nbTile(nb)}<span>${esc(nb.title)}</span><em>${counts.get(nb.id) || ''}</em>${childrenOf(nb.id).length ? ICON.chevron : ''}</button></li>`).join('');
+}
+
 function renderList() {
   el.listTitle.textContent = viewTitle();
   el.trashBar.classList.toggle('hidden', state.view.type !== 'trash');
+  renderHeader();
+  renderSubNotebooks();
   const notes = viewNotes();
   const pin = '<svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 4H6l4-4ZM12 14v7"/></svg>';
   const star = '<svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/></svg>';
@@ -349,18 +411,55 @@ function renderList() {
   el.noteList.innerHTML = shown.map(n => {
     const nbNames = (n.notebook_ids || []).map(id => state.notebooks.get(id)).filter(isAlive).map(nb => nb.title).join(', ');
     const date = state.sort === 'created' ? n.created_at : n.updated_at;
+    const img = firstImage(n);
+    const nImg = img ? imageCount(n) : 0;
+    const snip = highlight(snippetFor(n), state.query) || (nImg ? `${nImg} ${nImg === 1 ? 'imagen' : 'imágenes'}` : '&nbsp;');
+    const showNb = nbNames && !(state.view.type === 'notebook' && (n.notebook_ids || []).includes(state.view.id));
     return `<li><button class="note-item ${n.id === state.currentId ? 'active' : ''}" data-note="${esc(n.id)}">
-      <div class="t">${n.pinned && state.view.type !== 'trash' ? pin : ''}<span>${highlight(n.title || 'Nota sin título', state.query)}</span>${n.bookmarked ? star : ''}</div>
-      <div class="s">${highlight(snippetFor(n), state.query) || '&nbsp;'}</div>
-      <div class="m"><span>${fmtDate(date)}</span>${nbNames ? `<span>· ${esc(nbNames)}</span>` : ''}</div>
+      <div class="body">
+        <div class="t">${n.pinned && state.view.type !== 'trash' ? pin : ''}<span>${highlight(n.title || 'Nota sin título', state.query)}</span>${n.bookmarked ? star : ''}</div>
+        <div class="s">${snip}</div>
+        <div class="m"><span>${fmtDate(date)}</span>${showNb ? `<span>· ${esc(nbNames)}</span>` : ''}</div>
+      </div>
+      ${img ? `<span class="thumb" data-thumb="${esc(img)}"></span>` : ''}
     </button></li>`;
   }).join('') + (notes.length > shown.length ? `<li class="list-empty">… y ${notes.length - shown.length} más. Usa la búsqueda.</li>` : '');
-  el.listEmpty.classList.toggle('hidden', notes.length > 0);
+  observeThumbs();
+  el.listEmpty.classList.toggle('hidden', notes.length > 0 || !!el.subNbs.children.length);
   if (state.query && !notes.length) el.listEmpty.textContent = 'Sin resultados.';
   else el.listEmpty.textContent = 'No hay notas aquí.';
 }
 
 function renderAll() { renderSidebar(); renderList(); }
+
+// Miniaturas: se cargan solo cuando la nota aparece en pantalla.
+const thumbIO = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    thumbIO.unobserve(e.target);
+    loadThumb(e.target);
+  }
+}, { root: null, rootMargin: '300px 0px' }) : null;
+
+function observeThumbs() {
+  for (const t of el.noteList.querySelectorAll('.thumb[data-thumb]')) {
+    if (thumbIO) thumbIO.observe(t); else loadThumb(t);
+  }
+}
+function loadThumb(node) {
+  sync.thumbURL(node.dataset.thumb).then(url => { if (url) node.style.backgroundImage = `url("${url}")`; }).catch(() => {});
+}
+
+// Precarga en segundo plano todas las imágenes, para verlas al instante y sin conexión.
+let prefetchTimer = null;
+function prefetchSoon(ms = 4000) {
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(() => {
+    const paths = new Set();
+    for (const n of aliveNotes()) for (const m of (n.html || '').matchAll(/data-file="([^"]+)"/g)) paths.add(m[1]);
+    sync.prefetchFiles([...paths]);
+  }, ms);
+}
 
 // ---------------- Editor ----------------
 let saveTimer = null;
@@ -384,7 +483,10 @@ async function openNote(id, { keepView = false } = {}) {
   for (const b of el.noteList.querySelectorAll('.note-item')) b.classList.toggle('active', b.dataset.note === id);
   if (!keepView) {
     el.editorScroll.scrollTop = 0;
-    if (isNarrow()) el.app.dataset.view = 'editor';
+    if (isNarrow()) {
+      if (el.app.dataset.view !== 'editor') history.pushState({ apuntes: 'editor' }, '');
+      el.app.dataset.view = 'editor';
+    }
   }
 }
 
@@ -407,10 +509,46 @@ function renderNoteMeta() {
   el.noteDates.textContent = `Creada ${new Date(n.created_at).toLocaleString('es-CL')} · Editada ${new Date(n.updated_at).toLocaleString('es-CL')}`;
 }
 
+const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i;
 async function hydrateFiles(root) {
+  const forNote = state.currentId;
   for (const img of root.querySelectorAll('img[data-file]')) {
-    sync.fileURL(img.dataset.file).then(url => { if (url) img.src = url; }).catch(() => { img.alt = 'Imagen no disponible sin conexión'; });
+    img.classList.add('loading');
+    img.decoding = 'async';
+    const load = (tries) => sync.fileURL(img.dataset.file).then(url => {
+      if (url) {
+        img.onload = () => { if (img.naturalWidth >= 320) img.classList.add('wide'); };
+        img.src = url; img.classList.remove('loading');
+      }
+    }).catch(() => {
+      if (tries > 0 && state.currentId === forNote) setTimeout(() => load(tries - 1), 2500);
+      else img.alt = navigator.onLine ? 'No se pudo cargar la imagen' : 'Imagen no disponible sin conexión';
+    });
+    load(2);
   }
+  for (const a of root.querySelectorAll('a[data-file]')) {
+    if (!VIDEO_EXT.test(a.dataset.file) || a.nextElementSibling?.dataset?.ephemeral) continue;
+    const v = document.createElement('video');
+    Object.assign(v, { controls: true, playsInline: true, preload: 'metadata' });
+    v.dataset.ephemeral = '1';
+    v.contentEditable = 'false';
+    a.after(v);
+    sync.fileURL(a.dataset.file).then(url => { if (url) v.src = url; }).catch(() => v.remove());
+  }
+}
+
+// Visor de imágenes a pantalla completa (tocar para acercar).
+function openLightbox(src) {
+  el.lbImg.src = src;
+  el.lbScroll.classList.remove('zoom');
+  el.lightbox.classList.remove('hidden');
+  history.pushState({ apuntes: 'lightbox' }, '');
+}
+function closeLightbox(fromHistory = false) {
+  if (el.lightbox.classList.contains('hidden')) return;
+  el.lightbox.classList.add('hidden');
+  el.lbImg.removeAttribute('src');
+  if (!fromHistory && history.state?.apuntes === 'lightbox') history.back();
 }
 
 function scheduleSave() {
@@ -661,9 +799,12 @@ function bind() {
     const title = await ask('Nombre de la libreta');
     if (title) { const nb = await createNotebook(title); setView({ type: 'notebook', id: nb.id }); }
   };
-  $('#btnMenu').onclick = () => el.app.classList.toggle('nav-open');
+  $('#btnMenu').onclick = () => {
+    if (el.btnMenu.dataset.back) setView({ type: 'notebook', id: el.btnMenu.dataset.back });
+    else el.app.classList.toggle('nav-open');
+  };
   el.app.addEventListener('click', (e) => {
-    if (el.app.classList.contains('nav-open') && !e.target.closest('#sidebar') && !e.target.closest('#btnMenu')) el.app.classList.remove('nav-open');
+    if (el.app.classList.contains('nav-open') && !e.target.closest('#sidebar') && !e.target.closest('#btnMenu') && !e.target.closest('#btnBooks')) el.app.classList.remove('nav-open');
   });
   $('#btnSync').onclick = () => { if (state.mode === 'cloud') sync.syncNow(); else toast('Modo local: sin sincronización'); };
 
@@ -674,7 +815,56 @@ function bind() {
   el.search.addEventListener('input', () => { state.query = el.search.value; renderList(); });
   el.sort.addEventListener('change', () => { state.sort = el.sort.value; localStorage.setItem('apuntes_sort', state.sort); renderList(); });
   $('#btnNewNote').onclick = newNote;
-  $('#btnBack').onclick = async () => { await flushSave(true); el.app.dataset.view = 'list'; state.currentId = null; el.editorPane.classList.remove('has-note'); renderList(); };
+  const backToList = async () => { await flushSave(true); el.app.dataset.view = 'list'; state.currentId = null; el.editorPane.classList.remove('has-note'); renderList(); };
+  $('#btnBack').onclick = () => { if (history.state?.apuntes === 'editor') history.back(); else backToList(); };
+  addEventListener('popstate', () => {
+    if (!el.lightbox.classList.contains('hidden')) { closeLightbox(true); return; }
+    if (el.app.dataset.view === 'editor' && isNarrow()) backToList();
+  });
+  $('#lbClose').onclick = () => closeLightbox();
+  el.lbScroll.addEventListener('click', (e) => {
+    if (e.target === el.lbImg) el.lbScroll.classList.toggle('zoom'); else closeLightbox();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+
+  // Barra inferior del celular
+  $('#btnFab').onclick = newNote;
+  $('#btnBooks').onclick = () => el.app.classList.add('nav-open');
+  $('#btnListMore').onclick = (e) => {
+    e.stopPropagation();
+    for (const b of el.listMenu.querySelectorAll('[data-sort]')) b.classList.toggle('on', b.dataset.sort === state.sort);
+    el.listMenu.classList.toggle('hidden');
+  };
+  document.addEventListener('click', (e) => { if (!e.target.closest('#listMenu')) el.listMenu.classList.add('hidden'); });
+  el.listMenu.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    el.listMenu.classList.add('hidden');
+    if (b.dataset.sort) { state.sort = b.dataset.sort; el.sort.value = state.sort; localStorage.setItem('apuntes_sort', state.sort); renderList(); }
+    else if (b.dataset.lact === 'sync') $('#setSync').click();
+    else if (b.dataset.lact === 'settings') $('#btnSettings').click();
+  });
+  el.syncMini.onclick = () => {
+    if (state.mode === 'cloud') { sync.ensureRealtime(); sync.syncNow(); }
+    toast(el.syncMini.title || 'Sincronización');
+  };
+  el.subNbs.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-subnb]');
+    if (b) setView({ type: 'notebook', id: b.dataset.subnb });
+  });
+
+  // En el celular la barra de formato va pegada sobre el teclado.
+  const vv = window.visualViewport;
+  if (vv) {
+    const place = () => {
+      const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
+      document.documentElement.style.setProperty('--kb', `${kb}px`);
+      document.documentElement.style.setProperty('--kb-safe', kb > 40 ? '0px' : 'env(safe-area-inset-bottom)');
+    };
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+    place();
+  }
   $('#btnEmptyTrash').onclick = async () => {
     const trashed = [...state.notes.values()].filter(n => isAlive(n) && n.trashed);
     if (!trashed.length || !confirm(`¿Eliminar para siempre ${trashed.length} notas?`)) return;
@@ -689,6 +879,8 @@ function bind() {
   });
   el.editor.addEventListener('click', (e) => {
     if (handleChecklistClick(e, el.editor)) { scheduleSave(); return; }
+    const img = e.target.closest('img');
+    if (img && img.src && !img.classList.contains('loading')) { e.preventDefault(); openLightbox(img.src); return; }
     const a = e.target.closest('a');
     if (!a) return;
     if (a.dataset.file) {
