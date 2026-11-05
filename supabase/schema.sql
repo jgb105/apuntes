@@ -117,3 +117,6 @@ revoke all on public.import_files from anon;
 drop policy if exists import_files_owner on public.import_files;
 create policy import_files_owner on public.import_files for all to authenticated
   using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- v1.2: portada de cada libreta ("preset:<clave>" o "file:<ruta>")
+alter table public.notebooks add column if not exists cover text;

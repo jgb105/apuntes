@@ -187,9 +187,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .toolbar button svg { width: 18px; height: 18px; }
 .toolbar mark { background: var(--mark); color: var(--text); padding: 0 3px; border-radius: 2px; }
 .toolbar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex: none; }
-.editor-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.editor-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; }
 .editor {
-  max-width: 780px; margin: 0 auto; padding: 22px 28px 12px; min-height: 60%; outline: none;
+  width: 100%; max-width: 780px; margin: 0 auto; padding: 22px 28px 12px; flex: 1 0 auto; min-height: 40vh; outline: none;
   font-size: 16px; line-height: 1.65; overflow-wrap: anywhere;
 }
 .editor > :first-child { margin-top: 0; }
@@ -225,7 +225,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   border-color: var(--accent);
 }
 .editor[contenteditable="false"] { opacity: .75; }
-.note-foot { max-width: 780px; margin: 0 auto; padding: 8px 28px 40px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.note-foot { width: 100%; max-width: 780px; margin: 0 auto; padding: 8px 28px 40px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .tags { display: contents; }
 .tag {
   display: inline-flex; align-items: center; gap: 4px; background: var(--bg); border: 1px solid var(--line);
@@ -416,3 +416,21 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   .menu button { padding: 12px 14px; font-size: 16px; }
   .dlg { padding: 18px; }
 }
+
+/* Portadas de libretas */
+.nb-tile.cover { background: var(--panel) center / cover no-repeat; color: transparent; }
+.cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; max-height: 52vh; overflow: auto; padding: 2px; }
+.cover-grid button {
+  aspect-ratio: 1; border: 2px solid transparent; border-radius: 12px; background: var(--panel) center / cover no-repeat;
+  padding: 0; position: relative; overflow: hidden;
+}
+.cover-grid button span { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .55)); padding: 10px 4px 3px; }
+.cover-grid button.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.cover-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.tpl-list button { width: 100%; text-align: left; border: none; background: none; padding: 12px 8px; border-bottom: 1px solid var(--line); font-size: 15px; color: var(--text); }
+.tpl-list button:hover { background: var(--hover); }
+.tpl-banner { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+
+/* Nota nueva: texto guía mientras está vacía */
+.editor.empty > :first-child::before { content: "Título"; color: var(--muted); opacity: .6; pointer-events: none; }
+.editor.empty::after { content: "Escribe aquí…"; display: block; color: var(--muted); opacity: .5; margin-top: .4em; pointer-events: none; }

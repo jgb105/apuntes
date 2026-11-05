@@ -60,6 +60,7 @@
         <ul class="nav" id="navFixed">
           <li><button data-nav="all"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg><span>Todas las notas</span><em id="cntAll"></em></button></li>
           <li><button data-nav="fav"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/></svg><span>Favoritos</span><em id="cntFav"></em></button></li>
+          <li><button data-nav="templates"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>Plantillas</span><em id="cntTpl"></em></button></li>
           <li><button data-nav="trash"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span>Papelera</span><em id="cntTrash"></em></button></li>
         </ul>
 
@@ -116,6 +117,7 @@
           <button data-sort="created" role="menuitemradio">Fecha de creación</button>
           <button data-sort="title" role="menuitemradio">Título (A–Z)</button>
           <hr>
+          <button data-lact="fromtpl" role="menuitem">Nueva nota desde plantilla</button>
           <button data-lact="sync" role="menuitem">Sincronizar ahora</button>
           <button data-lact="settings" role="menuitem">Ajustes</button>
         </div>
@@ -135,6 +137,7 @@
           <button data-act="copy" role="menuitem">Copiar texto</button>
           <button data-act="md" role="menuitem">Descargar como Markdown</button>
           <button data-act="dup" role="menuitem">Duplicar</button>
+          <button data-act="tpl" role="menuitem">Guardar como plantilla</button>
           <button data-act="trash" role="menuitem" class="danger">Mover a la papelera</button>
         </div>
       </header>
@@ -143,6 +146,11 @@
         <span>Esta nota está en la papelera.</span>
         <button class="btn sm" id="btnRestore">Restaurar</button>
         <button class="btn sm danger" id="btnPurge">Eliminar para siempre</button>
+      </div>
+
+      <div id="tplBanner" class="trash-banner tpl-banner hidden">
+        <span>Esta es una plantilla.</span>
+        <button class="btn sm primary" id="btnUseTpl">Crear nota con esta plantilla</button>
       </div>
 
       <div class="toolbar" id="toolbar" role="toolbar" aria-label="Formato">
@@ -171,8 +179,8 @@
       <div class="editor-scroll" id="editorScroll">
         <article id="editor" class="editor" contenteditable="true" spellcheck="true" aria-label="Contenido de la nota"></article>
         <footer class="note-foot">
-          <div class="tags" id="tagChips"></div>
-          <input id="tagInput" class="tag-input" placeholder="+ etiqueta" aria-label="Agregar etiqueta" enterkeyhint="done">
+          <div class="tags hidden" id="tagChips"></div>
+          <input id="tagInput" class="tag-input hidden" placeholder="+ etiqueta" aria-label="Agregar etiqueta" enterkeyhint="done">
           <p class="dates" id="noteDates"></p>
         </footer>
       </div>
@@ -197,6 +205,26 @@
       <h3>Libretas de la nota</h3>
       <ul id="pickList" class="pick-list"></ul>
       <menu><button value="cancel" class="btn ghost">Cancelar</button><button value="ok" class="btn primary">Guardar</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlgCover" class="dlg wide">
+    <form method="dialog">
+      <h3>Portada de <span id="coverNb"></span></h3>
+      <div class="cover-grid" id="coverGrid"></div>
+      <div class="cover-actions">
+        <button type="button" class="btn" id="coverUpload">Subir una imagen…</button>
+        <button type="button" class="btn ghost" id="coverNone">Sin portada</button>
+      </div>
+      <menu><button value="cancel" class="btn primary">Listo</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlgTpl" class="dlg">
+    <form method="dialog">
+      <h3>Nueva nota desde plantilla</h3>
+      <ul id="tplList" class="pick-list tpl-list"></ul>
+      <menu><button value="cancel" class="btn ghost">Cancelar</button></menu>
     </form>
   </dialog>
 
@@ -244,6 +272,7 @@
   </div>
 
   <input type="file" id="imgInput" accept="image/*" hidden>
+  <input type="file" id="coverInput" accept="image/*" hidden>
   <input type="file" id="restoreInput" accept=".json,application/json" hidden>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

@@ -9,7 +9,7 @@ const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/
 export const BUCKET = 'adjuntos';
 
 const COLS = {
-  notebooks: ['id', 'title', 'parent_id', 'sort_order', 'deleted', 'created_at', 'updated_at'],
+  notebooks: ['id', 'title', 'parent_id', 'sort_order', 'cover', 'deleted', 'created_at', 'updated_at'],
   notes: ['id', 'title', 'html', 'text', 'notebook_ids', 'tags', 'pinned', 'bookmarked',
           'trashed', 'deleted', 'created_at', 'updated_at'],
 };
@@ -196,7 +196,8 @@ function minusOverlap(iso) {
 }
 
 async function pullTable(table) {
-  const key = `pull_${table}_${user.id}`;
+  // v1.2 agregó la portada de las libretas: se vuelven a bajar todas una vez para traerla.
+  const key = table === 'notebooks' ? `pull_${table}_${user.id}_c1` : `pull_${table}_${user.id}`;
   const saved = (await db.metaGet(key)) || '1970-01-01T00:00:00Z';
   let since = minusOverlap(saved);
   let newest = saved;

@@ -4,8 +4,9 @@ import { CONFIG } from '../config.js';
 import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistItem,
   compressImage, toMarkdown, closestIn } from './editor.js';
 import { firstLine } from './importer.js';
+import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.1.2';
+export const APP_VERSION = '1.2.0';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -60,12 +61,24 @@ function fmtDate(ms) {
   return `${d.toLocaleDateString('es-CL', opts)}, ${time}`;
 }
 
-// Ícono de color para cada libreta (estable según su id).
+// Ícono de cada libreta: su portada (dibujo o imagen propia) o, si no tiene, un color con su inicial.
 function nbTile(nb) {
+  const cover = nb.cover || '';
+  if (cover.startsWith('preset:') && presetURL(cover.slice(7))) {
+    return `<i class="nb-tile cover" style="background-image:url('${presetURL(cover.slice(7))}')" aria-hidden="true"></i>`;
+  }
+  if (cover.startsWith('file:')) {
+    return `<i class="nb-tile cover" data-cover-file="${esc(cover.slice(5))}" aria-hidden="true"></i>`;
+  }
   let h = 0;
   for (const c of nb.id) h = (h * 31 + c.charCodeAt(0)) % 360;
   const letter = esc((nb.title || '?').trim().charAt(0) || '?');
   return `<i class="nb-tile" style="--h:${h}" aria-hidden="true">${letter}</i>`;
+}
+function hydrateCovers(root) {
+  for (const t of root.querySelectorAll('[data-cover-file]')) {
+    sync.thumbURL(t.dataset.coverFile).then(url => { if (url) t.style.backgroundImage = `url("${url}")`; }).catch(() => {});
+  }
 }
 
 const isAlive = (n) => n && !n.deleted;
@@ -240,7 +253,7 @@ function aliveNotes() { return [...state.notes.values()].filter(n => isAlive(n) 
 function aliveNotebooks() { return [...state.notebooks.values()].filter(isAlive); }
 
 function childrenOf(parentId) {
-  return aliveNotebooks().filter(n => (n.parent_id || null) === parentId && (n.parent_id ? state.notebooks.get(n.parent_id) && isAlive(state.notebooks.get(n.parent_id)) : true))
+  return aliveNotebooks().filter(n => n.id !== TEMPLATES_NB && (n.parent_id || null) === parentId && (n.parent_id ? state.notebooks.get(n.parent_id) && isAlive(state.notebooks.get(n.parent_id)) : true))
     .sort((a, b) => collator.compare(a.title, b.title));
 }
 
@@ -259,6 +272,7 @@ function renderSidebar() {
   $('#cntAll').textContent = alive.filter(n => !isTemplate(n)).length || '';
   $('#cntFav').textContent = alive.filter(n => n.bookmarked).length || '';
   $('#cntTrash').textContent = [...state.notes.values()].filter(n => isAlive(n) && n.trashed).length || '';
+  $('#cntTpl').textContent = alive.filter(isTemplate).length || '';
 
   const counts = new Map();
   for (const n of alive) for (const id of n.notebook_ids || []) counts.set(id, (counts.get(id) || 0) + 1);
@@ -279,6 +293,7 @@ function renderSidebar() {
     </li>`;
   }).join('');
   el.tree.innerHTML = build(null) || '<li class="muted small" style="padding:4px 10px">Sin libretas</li>';
+  hydrateCovers(el.tree);
 
   const tagCount = new Map();
   for (const n of alive) for (const t of n.tags || []) tagCount.set(t, (tagCount.get(t) || 0) + 1);
@@ -316,6 +331,7 @@ function viewNotes() {
   else {
     list = all.filter(n => !n.trashed);
     if (v.type === 'all') list = list.filter(n => !isTemplate(n));
+    if (v.type === 'templates') list = list.filter(isTemplate);
     if (v.type === 'fav') list = list.filter(n => n.bookmarked);
     else if (v.type === 'notebook') {
       const ids = childrenOf(v.id).length ? new Set([v.id]) : descendantIds(v.id);
@@ -343,6 +359,7 @@ function viewTitle() {
   const v = state.view;
   if (v.type === 'fav') return 'Favoritos';
   if (v.type === 'trash') return 'Papelera';
+  if (v.type === 'templates') return 'Plantillas';
   if (v.type === 'notebook') return state.notebooks.get(v.id)?.title || 'Libreta';
   if (v.type === 'tag') return `# ${v.id}`;
   return 'Todas las notas';
@@ -429,6 +446,7 @@ function renderList() {
     </button></li>`;
   }).join('') + (notes.length > shown.length ? `<li class="list-empty">… y ${notes.length - shown.length} más. Usa la búsqueda.</li>` : '');
   observeThumbs();
+  hydrateCovers(el.subNbs);
   el.listEmpty.classList.toggle('hidden', notes.length > 0 || !!el.subNbs.children.length);
   if (state.query && !notes.length) el.listEmpty.textContent = 'Sin resultados.';
   else el.listEmpty.textContent = 'No hay notas aquí.';
@@ -461,6 +479,7 @@ function prefetchSoon(ms = 4000) {
   prefetchTimer = setTimeout(() => {
     const paths = new Set();
     for (const n of aliveNotes()) for (const m of (n.html || '').matchAll(/data-file="([^"]+)"/g)) paths.add(m[1]);
+    for (const nb of aliveNotebooks()) if ((nb.cover || '').startsWith('file:')) paths.add(nb.cover.slice(5));
     sync.prefetchFiles([...paths]);
   }, ms);
 }
@@ -481,6 +500,8 @@ async function openNote(id, { keepView = false } = {}) {
   el.editor.contentEditable = n.trashed ? 'false' : 'true';
   el.toolbar.classList.toggle('hidden', !!n.trashed);
   el.trashBanner.classList.toggle('hidden', !n.trashed);
+  $('#tplBanner').classList.toggle('hidden', !isTemplate(n) || !!n.trashed);
+  updateEmpty();
   el.saveState.textContent = '';
   dirtyEditor = false;
   renderNoteMeta();
@@ -595,23 +616,104 @@ function renderListItemOnly(n) {
 let sideTimer = null;
 function renderSidebarCountsSoon() { clearTimeout(sideTimer); sideTimer = setTimeout(renderSidebar, 400); }
 
-async function newNote() {
+function updateEmpty() {
+  const empty = !el.editor.textContent.trim() && !el.editor.querySelector('img, video, hr, li, table, .img-missing');
+  el.editor.classList.toggle('empty', empty);
+}
+
+// Se llama dentro del mismo toque del botón: así el celular abre el teclado.
+function primeNewNote() {
+  if (state.currentId) flushSave(true);
+  state.currentId = null;
+  el.editorPane.classList.add('has-note');
+  if (isNarrow() && el.app.dataset.view !== 'editor') { history.pushState({ apuntes: 'editor' }, ''); el.app.dataset.view = 'editor'; }
+  el.editor.contentEditable = 'true';
+  el.editor.innerHTML = '<h1><br></h1>';
+  updateEmpty();
+  el.editor.focus();
+}
+
+async function newNote(fromTemplate = null) {
   await flushSave(true);
   const v = state.view;
   const n = {
     id: uid(), title: '', html: '<h1><br></h1>', text: '',
-    notebook_ids: v.type === 'notebook' ? [v.id] : [],
+    notebook_ids: v.type === 'notebook' ? [v.id] : v.type === 'templates' ? [TEMPLATES_NB] : [],
     tags: v.type === 'tag' ? [v.id] : [],
     pinned: false, bookmarked: v.type === 'fav', trashed: false, deleted: false,
     created_at: now(), updated_at: now(),
   };
-  if (v.type === 'trash') setView({ type: 'all' });
+  if (fromTemplate) {
+    const today = new Date().toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const fill = (t) => String(t || '').replace(/\{\{\s*(date|fecha)\s*\}\}/gi, today);
+    n.html = fill(fromTemplate.html) || n.html;
+    n.text = fill(fromTemplate.text);
+    n.title = fill(fromTemplate.title);
+    n.notebook_ids = (fromTemplate.notebook_ids || []).filter(id => id !== TEMPLATES_NB);
+    if (v.type === 'notebook' && !n.notebook_ids.length) n.notebook_ids = [v.id];
+  }
+  if (v.type === 'trash' || (fromTemplate && v.type === 'templates')) setView({ type: 'all' });
   await persist('notes', n);
   renderAll();
   await openNote(n.id);
   el.editor.focus();
-  const h = el.editor.querySelector('h1');
-  if (h) { const r = document.createRange(); r.setStart(h, 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  const h = el.editor.firstElementChild;
+  if (h && !fromTemplate) { const r = document.createRange(); r.setStart(h, 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+}
+
+function chooseTemplate() {
+  const tpls = aliveNotes().filter(isTemplate).sort((a, b) => collator.compare(a.title || '', b.title || ''));
+  if (!tpls.length) { toast('No tienes plantillas. Abre una nota → … → Guardar como plantilla.', 3500); return; }
+  const dlg = $('#dlgTpl');
+  $('#tplList').innerHTML = tpls.map(t => `<li><button type="button" data-tpl="${esc(t.id)}">${esc(t.title || 'Plantilla sin título')}</button></li>`).join('');
+  $('#tplList').onclick = (e) => {
+    const b = e.target.closest('[data-tpl]');
+    if (!b) return;
+    dlg.close();
+    newNote(state.notes.get(b.dataset.tpl));
+  };
+  dlg.showModal();
+}
+
+// ---------------- Portadas de libretas ----------------
+function chooseCover(id) {
+  const nb = state.notebooks.get(id);
+  if (!nb) return;
+  const dlg = $('#dlgCover');
+  $('#coverNb').textContent = nb.title;
+  const cur = nb.cover || '';
+  $('#coverGrid').innerHTML = Object.entries(PRESETS).map(([k, p]) =>
+    `<button type="button" data-cover="preset:${k}" class="${cur === 'preset:' + k ? 'on' : ''}" style="background-image:url('${presetURL(k)}')" aria-label="${esc(p.name)}"><span>${esc(p.name)}</span></button>`).join('');
+  const setCover = async (cover) => {
+    const fresh = state.notebooks.get(id);
+    await persist('notebooks', { ...fresh, cover, updated_at: now() });
+    renderAll();
+  };
+  $('#coverGrid').onclick = async (e) => {
+    const b = e.target.closest('[data-cover]');
+    if (!b) return;
+    for (const x of $('#coverGrid').children) x.classList.toggle('on', x === b);
+    await setCover(b.dataset.cover);
+  };
+  $('#coverNone').onclick = async () => { await setCover(null); dlg.close(); };
+  $('#coverUpload').onclick = () => {
+    const input = $('#coverInput');
+    input.onchange = async () => {
+      const f = input.files[0];
+      input.value = '';
+      if (!f) return;
+      try {
+        const blob = await squareImage(f);
+        const path = `${sync.filePrefix()}/portada-${uid()}.jpg`;
+        await sync.saveFile(path, blob);
+        await setCover(`file:${path}`);
+        dlg.close();
+        toast('Portada actualizada');
+      } catch (err) { toast(`No se pudo usar esa imagen: ${err.message || err}`, 3500); }
+    };
+    input.click();
+  };
+  dlg.showModal();
 }
 
 async function updateCurrent(patch) {
@@ -664,9 +766,9 @@ async function notebookMenu(id, anchor) {
   if (!nb) return;
   const menu = document.createElement('div');
   menu.className = 'menu';
-  menu.innerHTML = `<button data-a="sub">Nueva sublibreta</button><button data-a="ren">Renombrar</button><button data-a="del" class="danger">Eliminar libreta</button>`;
+  menu.innerHTML = `<button data-a="cover">Cambiar portada</button><button data-a="sub">Nueva sublibreta</button><button data-a="ren">Renombrar</button><button data-a="del" class="danger">Eliminar libreta</button>`;
   const r = anchor.getBoundingClientRect();
-  Object.assign(menu.style, { position: 'fixed', left: `${Math.min(r.left, innerWidth - 220)}px`, top: `${r.bottom + 4}px`, right: 'auto' });
+  Object.assign(menu.style, { position: 'fixed', left: `${Math.max(8, Math.min(r.left, innerWidth - 230))}px`, top: `${Math.min(r.bottom + 4, innerHeight - 220)}px`, right: 'auto', zIndex: 60 });
   document.body.appendChild(menu);
   const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); };
   const outside = (e) => { if (!menu.contains(e.target)) close(); };
@@ -674,6 +776,7 @@ async function notebookMenu(id, anchor) {
   menu.onclick = async (e) => {
     const a = e.target.closest('button')?.dataset.a;
     close();
+    if (a === 'cover') { chooseCover(id); return; }
     if (a === 'sub') {
       const title = await ask('Nombre de la sublibreta');
       if (title) { await createNotebook(title, id); state.openNbs.add(id); saveOpenNbs(); renderSidebar(); }
@@ -808,7 +911,10 @@ function bind() {
     else el.app.classList.toggle('nav-open');
   };
   el.app.addEventListener('click', (e) => {
-    if (el.app.classList.contains('nav-open') && !e.target.closest('#sidebar') && !e.target.closest('#btnMenu') && !e.target.closest('#btnBooks')) el.app.classList.remove('nav-open');
+    // composedPath: el botón tocado puede haber sido redibujado (p. ej. al expandir una libreta).
+    const path = e.composedPath();
+    const inside = (id) => path.some(n => n.id === id);
+    if (el.app.classList.contains('nav-open') && !inside('sidebar') && !inside('btnMenu') && !inside('btnBooks')) el.app.classList.remove('nav-open');
   });
   $('#btnSync').onclick = () => { if (state.mode === 'cloud') sync.syncNow(); else toast('Modo local: sin sincronización'); };
 
@@ -832,7 +938,7 @@ function bind() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
   // Barra inferior del celular
-  $('#btnFab').onclick = newNote;
+  $('#btnFab').onclick = () => { primeNewNote(); newNote(); };
   $('#btnBooks').onclick = () => el.app.classList.add('nav-open');
   $('#btnListMore').onclick = (e) => {
     e.stopPropagation();
@@ -846,6 +952,7 @@ function bind() {
     el.listMenu.classList.add('hidden');
     if (b.dataset.sort) { state.sort = b.dataset.sort; el.sort.value = state.sort; localStorage.setItem('apuntes_sort', state.sort); renderList(); }
     else if (b.dataset.lact === 'sync') $('#setSync').click();
+    else if (b.dataset.lact === 'fromtpl') chooseTemplate();
     else if (b.dataset.lact === 'settings') $('#btnSettings').click();
   });
   el.syncMini.onclick = () => {
@@ -877,7 +984,9 @@ function bind() {
   };
 
   // Editor
+  $('#btnUseTpl').onclick = () => { const n = state.notes.get(state.currentId); if (n) newNote(n); };
   el.editor.addEventListener('input', (e) => {
+    updateEmpty();
     if (e.inputType === 'insertParagraph') fixNewChecklistItem(el.editor);
     scheduleSave();
   });
@@ -965,6 +1074,13 @@ function bind() {
     if (act === 'trash') { await updateCurrent({ trashed: true, pinned: false }); closeNote(); toast('Movida a la papelera'); }
     else if (act === 'copy') { await navigator.clipboard.writeText(el.editor.innerText); toast('Texto copiado'); }
     else if (act === 'md') download(`${(n.title || 'nota').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80)}.md`, toMarkdown(el.editor), 'text/markdown');
+    else if (act === 'tpl') {
+      if (!state.notebooks.get(TEMPLATES_NB) || !isAlive(state.notebooks.get(TEMPLATES_NB))) {
+        await persist('notebooks', { id: TEMPLATES_NB, title: 'Plantillas', parent_id: null, sort_order: 999, deleted: false, created_at: now(), updated_at: now() });
+      }
+      const copy = { ...n, id: uid(), notebook_ids: [TEMPLATES_NB], pinned: false, bookmarked: false, created_at: now(), updated_at: now() };
+      await persist('notes', copy); renderAll(); toast('Guardada en Plantillas');
+    }
     else if (act === 'dup') {
       const copy = { ...n, id: uid(), title: `${n.title} (copia)`, created_at: now(), updated_at: now(), pinned: false };
       await persist('notes', copy); renderAll(); openNote(copy.id);

@@ -5,6 +5,7 @@
 // en la carpeta "files" del respaldo cuando se marca "Backup attachments".
 import * as db from './db.js';
 import { saveFile, filePrefix } from './sync.js';
+import { UPNOTE_COVER_MAP } from './covers.js';
 
 const LOCAL_FILE_PREFIX = 'http://localhost:9425/';
 const JSZIP = 'https://cdn.jsdelivr.net/npm/jszip@3.10.2/+esm';
@@ -193,6 +194,20 @@ export async function importBackup(backup, attachments = new Map(), onProgress =
     if (row?.downloadURL) { report.filesRemote++; return { url: row.downloadURL }; }
     report.filesMissing.push(name);
     return null;
+  }
+
+  // Portadas de libretas: las predeterminadas de UpNote → dibujo propio parecido; las subidas por el usuario → su imagen.
+  for (const nb of notebooks) {
+    const raw = String(liveNotebooks.find(x => x.id === nb.id)?.cover || '');
+    if (!raw) continue;
+    if (UPNOTE_COVER_MAP[raw]) nb.cover = `preset:${UPNOTE_COVER_MAP[raw]}`;
+    else if (raw.includes('__')) {
+      const name = raw.replace('__', '.');
+      if (fileNameVariants(name).some(v => attachByName.has(v))) {
+        const r = await resolveLocalRef(`${LOCAL_FILE_PREFIX}images/${name}`);
+        if (r?.path) nb.cover = `file:${r.path}`;
+      }
+    }
   }
 
   const parser = new DOMParser();
