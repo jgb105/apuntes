@@ -32,11 +32,13 @@ export function isCloud() { return !!client; }
 function status(s, detail) { listeners.status(s, detail); }
 
 export async function init({ url, key }) {
-  const { createClient } = await import(SUPABASE_JS);
-  client = createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true } });
+  if (!client) {
+    const { createClient } = await import(SUPABASE_JS);
+    client = createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true } });
+    client.auth.onAuthStateChange((_evt, session) => { user = session?.user || null; });
+  }
   const { data } = await client.auth.getSession();
   user = data.session?.user || null;
-  client.auth.onAuthStateChange((_evt, session) => { user = session?.user || null; });
   return user;
 }
 

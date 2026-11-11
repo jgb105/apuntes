@@ -120,3 +120,21 @@ create policy import_files_owner on public.import_files for all to authenticated
 
 -- v1.2: portada de cada libreta ("preset:<clave>" o "file:<ruta>")
 alter table public.notebooks add column if not exists cover text;
+
+-- v1.2.1: actividad real para que el plan gratis no pause el proyecto.
+-- La tarea de GitHub llama a keep_alive() dos veces al día: escribe una fila (no expone datos).
+create table if not exists public.keepalive (
+  id int primary key default 1 check (id = 1),
+  last_ping timestamptz not null default now(),
+  pings bigint not null default 0
+);
+alter table public.keepalive enable row level security;
+revoke all on public.keepalive from anon, authenticated;
+create or replace function public.keep_alive() returns timestamptz
+language sql security definer set search_path = public as $$
+  insert into public.keepalive (id, last_ping, pings) values (1, now(), 1)
+  on conflict (id) do update set last_ping = now(), pings = public.keepalive.pings + 1
+  returning last_ping;
+$$;
+revoke all on function public.keep_alive() from public;
+grant execute on function public.keep_alive() to anon, authenticated;

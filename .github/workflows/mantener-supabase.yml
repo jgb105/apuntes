@@ -1,21 +1,50 @@
-# Supabase (plan gratis) pausa los proyectos tras ~7 días sin actividad.
-# Este flujo hace una consulta liviana cada 3 días para mantenerlo activo.
-# Lee la URL y la clave publicable desde config.js (son datos públicos; la seguridad la da RLS).
+# Supabase (plan gratis) pausa los proyectos con poca actividad real en la base durante una semana.
+# Este flujo hace, dos veces al día, una escritura real en la base (función keep_alive) y una lectura
+# del almacenamiento. Si algo falla, el flujo queda en rojo y GitHub te avisa por correo.
+# Además, cada ~45 días hace un commit vacío: GitHub desactiva los flujos programados de los
+# repositorios que pasan 60 días sin cambios.
 name: Mantener Supabase activo
 on:
   schedule:
-    - cron: '17 12 */3 * *'
+    - cron: '17 11,23 * * *'
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Consultar la API
+        with:
+          fetch-depth: 1
+      - name: Actividad real en la base
         run: |
           URL=$(grep -oE "supabaseUrl: *'[^']+'" config.js | cut -d"'" -f2)
           KEY=$(grep -oE "supabaseAnonKey: *'[^']+'" config.js | cut -d"'" -f2)
-          code=$(curl -s -o /dev/null -w "%{http_code}" "$URL/rest/v1/notes?select=id&limit=1" -H "apikey: $KEY")
-          echo "Respuesta: $code"
-          # Cualquier respuesta del servidor (incluso 401/403 por la seguridad) cuenta como actividad.
-          test "$code" -gt 0 && test "$code" -lt 500
+          ok=0
+          for i in 1 2 3; do
+            code=$(curl -s -o resp.txt -w "%{http_code}" -X POST "$URL/rest/v1/rpc/keep_alive" \
+              -H "apikey: $KEY" -H "Content-Type: application/json" -d '{}')
+            echo "keep_alive -> $code $(head -c 200 resp.txt)"
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 20
+          done
+          code2=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL/storage/v1/object/list/adjuntos" \
+            -H "apikey: $KEY" -H "Content-Type: application/json" -d '{"prefix":"","limit":1}')
+          echo "storage -> $code2"
+          if [ "$ok" != "1" ]; then
+            echo "::error::La base no respondió. Revisa en supabase.com si el proyecto está en pausa."
+            exit 1
+          fi
+      - name: Mantener vivo el repositorio (evita que GitHub apague este flujo)
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Mantener activo el flujo programado"
+            git push
+          else
+            echo "Último cambio hace $(( (now - last) / 86400 )) días: no hace falta."
+          fi

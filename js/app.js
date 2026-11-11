@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -110,6 +110,16 @@ async function boot() {
     return startApp();
   }
   if (!cfg) return showSetup({ needConfig: true });
+  // Si este equipo ya tiene notas guardadas, abrir AL TIRO con ellas y conectar con el servidor
+  // en segundo plano: así la app abre aunque no haya internet o el servidor esté en pausa.
+  const lastUser = localStorage.getItem('apuntes_last_user');
+  if (lastUser && (await db.getAllKeys('notes')).length) {
+    state.mode = 'cloud';
+    await startApp();
+    setSyncStatus('syncing', '', 'Conectando con el servidor…');
+    connectCloud(cfg);
+    return;
+  }
   try {
     const user = await sync.init(cfg);
     state.mode = 'cloud';
@@ -120,6 +130,21 @@ async function boot() {
     // Sin conexión en el primer arranque: si ya hay datos locales, abrir igual.
     if ((await db.getAll('notes')).length) { state.mode = 'local'; return startApp(true); }
     return showSetup({ needConfig: !CONFIG.supabaseUrl, error: 'No se pudo conectar. Revisa tu conexión.' });
+  }
+}
+
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+
+async function connectCloud(cfg, tries = 0) {
+  try {
+    const user = await withTimeout(sync.init(cfg), 12_000);
+    if (user) { state.needLogin = false; enableCloud(); return; }
+    state.needLogin = true;
+    setSyncStatus('error', '', 'Sesión cerrada: toca el punto de color para volver a entrar. Tus notas siguen en este equipo.');
+  } catch (err) {
+    console.warn('Servidor no disponible', err);
+    setSyncStatus('offline', '', 'Sin conexión con el servidor. Puedes seguir usando tus notas: se suben solas cuando vuelva.');
+    setTimeout(() => connectCloud(cfg, tries + 1), Math.min(60_000, 5_000 * (tries + 1)));
   }
 }
 
@@ -187,10 +212,31 @@ function traducirError(err) {
 async function startApp(offlineFallback = false) {
   el.setup.classList.add('hidden');
   el.app.classList.remove('hidden');
+  if (state.started) { // ya estaba abierta (p. ej. se volvió a iniciar sesión)
+    if (state.mode === 'cloud' && sync.getUser()) enableCloud();
+    return;
+  }
+  state.started = true;
   el.sort.value = state.sort;
   await loadLocal();
   renderAll();
   if (state.mode === 'cloud') {
+    if (sync.getUser()) enableCloud();
+  } else {
+    setSyncStatus(offlineFallback ? 'offline' : 'local');
+  }
+  addEventListener('pagehide', flushSave);
+  if (tabs) tabs.onmessage = (e) => { if (e.data?.type === 'changed') onRemoteChange(); };
+  const last = localStorage.getItem('apuntes_last_note');
+  if (!isNarrow() && last && state.notes.get(last) && isAlive(state.notes.get(last))) openNote(last);
+}
+
+function enableCloud() {
+  if (state.cloudOn) return;
+  state.cloudOn = true;
+  const u = sync.getUser();
+  if (u) localStorage.setItem('apuntes_last_user', u.id);
+  {
     sync.on('status', setSyncStatus);
     sync.on('change', () => { onRemoteChange(); tellTabs(); prefetchSoon(); });
     sync.startRealtime();
@@ -206,13 +252,7 @@ async function startApp(offlineFallback = false) {
       if (document.visibilityState === 'visible') { sync.ensureRealtime(); sync.syncNow(); }
       else flushSave();
     });
-  } else {
-    setSyncStatus(offlineFallback ? 'offline' : 'local');
   }
-  addEventListener('pagehide', flushSave);
-  if (tabs) tabs.onmessage = (e) => { if (e.data?.type === 'changed') onRemoteChange(); };
-  const last = localStorage.getItem('apuntes_last_note');
-  if (!isNarrow() && last && state.notes.get(last) && isAlive(state.notes.get(last))) openNote(last);
 }
 
 async function loadLocal() {
@@ -956,6 +996,7 @@ function bind() {
     else if (b.dataset.lact === 'settings') $('#btnSettings').click();
   });
   el.syncMini.onclick = () => {
+    if (state.needLogin) { showSetup({ needConfig: false }); return; }
     if (state.mode === 'cloud') { sync.ensureRealtime(); sync.syncNow(); }
     toast(el.syncMini.title || 'Sincronización');
   };
@@ -1116,6 +1157,7 @@ function bind() {
       if (!confirm('¿Cerrar sesión? Se borrará la copia local de este dispositivo.')) return;
       await sync.signOut();
       await db.clearAll();
+      localStorage.removeItem('apuntes_last_user');
     } else {
       localStorage.removeItem('apuntes_local_only');
     }
