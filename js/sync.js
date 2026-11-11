@@ -139,11 +139,15 @@ export async function syncNow() {
       if (!navigator.onLine) { status('offline'); break; }
       status('syncing');
       try {
-        await pushFiles();
+        // Un adjunto con problemas no debe frenar la sincronización de las notas.
+        const fileProblem = await pushFiles().then(() => null, (e) => e);
         for (const t of TABLES) await pushTable(t);
         let changed = false;
         for (const t of TABLES) changed = (await pullTable(t)) || changed;
-        status('ok');
+        if (fileProblem) {
+          console.warn('Adjunto pendiente', fileProblem);
+          status('error', `No se pudo subir una imagen (${fileProblem?.message || fileProblem}). Las notas sí están sincronizadas; se reintenta solo.`);
+        } else status('ok');
         if (changed) listeners.change();
       } catch (err) {
         console.error('Error de sincronización', err);
@@ -199,7 +203,7 @@ function minusOverlap(iso) {
 
 async function pullTable(table) {
   // v1.2 agregó la portada de las libretas: se vuelven a bajar todas una vez para traerla.
-  const key = table === 'notebooks' ? `pull_${table}_${user.id}_c1` : `pull_${table}_${user.id}`;
+  const key = table === 'notebooks' ? `pull_${table}_${user.id}_c2` : `pull_${table}_${user.id}`;
   const saved = (await db.metaGet(key)) || '1970-01-01T00:00:00Z';
   let since = minusOverlap(saved);
   let newest = saved;
@@ -216,7 +220,10 @@ async function pullTable(table) {
     await db.updateMany(table, [...remote.keys()], (local, id) => {
       const r = remote.get(id);
       if (local && local._dirty && local.updated_at > r.updated_at) return undefined;
-      if (local && !local._dirty && local.updated_at === r.updated_at) return undefined; // ya la tengo
+      // Ya la tengo: misma fecha de edición y mismos campos (comparar campos evita perder datos
+      // que una versión anterior de la app no bajaba, como la portada de las libretas).
+      if (local && !local._dirty && local.updated_at === r.updated_at &&
+          COLS[table].every(c => JSON.stringify(local[c] ?? null) === JSON.stringify(r[c] ?? null))) return undefined;
       changed = true;
       const { server_updated_at, ...rest } = r;
       return { ...rest, _dirty: 0 };
@@ -264,8 +271,19 @@ async function pushFiles() {
       if (String(id).startsWith('local/')) continue;
       const f = await db.get('files', id);
       if (!f || !f.dirty) { done.add(id); continue; }
+      // Imagen vacía o ilegible (pasa en iPhone si el sistema borró datos del navegador): no hay nada
+      // que subir; se descarta para que no bloquee las demás.
+      let readable = !!(f.blob && f.blob.size > 0);
+      if (readable) { try { await f.blob.slice(0, 1).arrayBuffer(); } catch { readable = false; } }
+      if (!readable) {
+        console.warn('Adjunto vacío descartado', id);
+        await db.put('files', { ...f, dirty: 0 });
+        done.add(id);
+        continue;
+      }
       const { error } = await client.storage.from(BUCKET)
         .upload(f.id, f.blob, { upsert: true, contentType: f.blob.type || 'application/octet-stream' });
+      if (error && /no content/i.test(error.message || '')) { await db.put('files', { ...f, dirty: 0 }); done.add(id); continue; }
       if (error) throw error;
       await db.put('files', { ...f, dirty: 0 });
       done.add(id);

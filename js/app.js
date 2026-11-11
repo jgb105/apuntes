@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.2.1';
+export const APP_VERSION = '1.2.2';
 
 const $ = (s) => document.querySelector(s);
 const el = {
