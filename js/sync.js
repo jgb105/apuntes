@@ -25,6 +25,8 @@ let pullTimer = null;
 let pushTimer = null;
 let channel = null;
 const listeners = { change: () => {}, status: () => {} };
+// Enlace de "recuperar contraseña": llega con #...type=recovery en la URL (supabase-js la limpia al leerla).
+let recovery = /type=recovery/.test(location.hash);
 
 export function on(event, fn) { listeners[event] = fn; }
 export function getUser() { return user; }
@@ -35,7 +37,10 @@ export async function init({ url, key }) {
   if (!client) {
     const { createClient } = await import(SUPABASE_JS);
     client = createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true } });
-    client.auth.onAuthStateChange((_evt, session) => { user = session?.user || null; });
+    client.auth.onAuthStateChange((evt, session) => {
+      user = session?.user || null;
+      if (evt === 'PASSWORD_RECOVERY') recovery = true;
+    });
   }
   const { data } = await client.auth.getSession();
   user = data.session?.user || null;
@@ -54,6 +59,20 @@ export async function signUp(email, password) {
   if (error) throw error;
   user = data.user;
   return data;
+}
+
+export function takeRecovery() { const r = recovery && !!user; if (r) recovery = false; return r; }
+
+const APP_URL = new URL('./', location.href).href;
+
+export async function resetPassword(email) {
+  const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: APP_URL });
+  if (error) throw error;
+}
+
+export async function updatePassword(password) {
+  const { error } = await client.auth.updateUser({ password });
+  if (error) throw error;
 }
 
 export async function signOut() {

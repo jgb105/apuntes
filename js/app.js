@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.2.2';
+export const APP_VERSION = '1.3.0';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -36,6 +36,9 @@ const state = {
   currentId: null,
   openNbs: new Set(JSON.parse(localStorage.getItem('apuntes_open_nbs') || '[]')),
   mode: 'local', // 'cloud' | 'local'
+  // Lápiz: modo lectura (no se puede editar sin querer). Se recuerda en cada equipo.
+  readMode: localStorage.getItem('apuntes_read_mode') === '1',
+  editId: null, // nota recién creada: se puede escribir aunque esté el modo lectura
 };
 
 // ---------------- Utilidades ----------------
@@ -199,6 +202,60 @@ async function handleAuth(kind) {
   }
 }
 
+async function forgotPassword() {
+  const f = el.setupForm;
+  const email = f.email.value.trim();
+  if (!email || !f.email.checkValidity()) {
+    el.setupError.textContent = 'Escribe tu correo arriba y vuelve a tocar "¿Olvidaste tu contraseña?".';
+    f.email.focus();
+    return;
+  }
+  const b = $('#btnForgot'); b.disabled = true;
+  try {
+    if (!sync.isCloud()) { const cfg = loadConfig(); if (cfg) await sync.init(cfg); }
+    await sync.resetPassword(email);
+    el.setupError.textContent = `Te enviamos un correo a ${email}. Ábrelo en este equipo y toca el enlace: entrarás y podrás poner una contraseña nueva. Si no llega, revisa Spam.`;
+  } catch (err) {
+    el.setupError.textContent = /rate limit|seconds/i.test(err?.message || '')
+      ? 'Ya se envió un correo hace poco. Espera un minuto y vuelve a intentar.'
+      : traducirError(err);
+  } finally { b.disabled = false; }
+}
+
+function askNewPassword(fromEmail = false) {
+  const d = $('#dlgPassword'), f = $('#pwForm');
+  f.reset();
+  $('#pwError').textContent = '';
+  $('#pwTitle').textContent = fromEmail ? 'Pon tu contraseña nueva' : 'Cambiar contraseña';
+  $('#pwHint').textContent = fromEmail
+    ? 'Entraste con el enlace del correo. Elige una contraseña nueva (mínimo 8 caracteres) para entrar la próxima vez.'
+    : 'Mínimo 8 caracteres. Se usará en todos tus equipos.';
+  const u = sync.getUser();
+  f.username.value = u?.email || '';
+  if (!d.open) d.showModal();
+  f.pw1.focus();
+}
+
+async function savePassword(e) {
+  e.preventDefault();
+  const f = $('#pwForm'), err = $('#pwError');
+  err.textContent = '';
+  if (!f.reportValidity()) return;
+  if (f.pw1.value !== f.pw2.value) { err.textContent = 'Las dos contraseñas no coinciden.'; return; }
+  const b = $('#pwSave'); b.disabled = true;
+  try {
+    await sync.updatePassword(f.pw1.value);
+    $('#dlgPassword').close();
+    toast('Contraseña cambiada');
+  } catch (x) {
+    const m = x?.message || '';
+    err.textContent = /different from the old/i.test(m) ? 'Debe ser distinta a la anterior.'
+      : /at least|weak|short/i.test(m) ? 'Muy corta o débil: usa al menos 8 caracteres.'
+      : /reauthentication|session/i.test(m) ? 'La sesión venció. Cierra sesión, entra de nuevo y vuelve a intentarlo.'
+      : traducirError(x);
+  } finally { b.disabled = false; }
+}
+
 function traducirError(err) {
   const m = err?.message || String(err);
   if (/Invalid login credentials/i.test(m)) return 'Correo o contraseña incorrectos.';
@@ -232,6 +289,7 @@ async function startApp(offlineFallback = false) {
 }
 
 function enableCloud() {
+  if (sync.takeRecovery()) askNewPassword(true);
   if (state.cloudOn) return;
   state.cloudOn = true;
   const u = sync.getUser();
@@ -537,8 +595,8 @@ async function openNote(id, { keepView = false } = {}) {
   el.editorPane.classList.add('has-note');
   el.editor.innerHTML = sanitize(n.html);
   hydrateFiles(el.editor);
-  el.editor.contentEditable = n.trashed ? 'false' : 'true';
-  el.toolbar.classList.toggle('hidden', !!n.trashed);
+  if (state.editId !== id) state.editId = null;
+  applyEditMode();
   el.trashBanner.classList.toggle('hidden', !n.trashed);
   $('#tplBanner').classList.toggle('hidden', !isTemplate(n) || !!n.trashed);
   updateEmpty();
@@ -553,6 +611,39 @@ async function openNote(id, { keepView = false } = {}) {
       el.app.dataset.view = 'editor';
     }
   }
+}
+
+function canEdit() {
+  const n = state.currentId && state.notes.get(state.currentId);
+  if (!n || n.trashed) return false;
+  return !state.readMode || state.editId === n.id;
+}
+
+function applyEditMode() {
+  const n = state.currentId && state.notes.get(state.currentId);
+  const editable = canEdit();
+  el.editor.contentEditable = editable ? 'true' : 'false';
+  el.editorPane.classList.toggle('reading', !editable);
+  el.toolbar.classList.toggle('hidden', !editable);
+  const b = $('#btnEdit');
+  b.classList.toggle('hidden', !!n?.trashed);
+  b.classList.toggle('on', editable);
+  b.setAttribute('aria-pressed', String(editable));
+  b.title = editable ? 'Editando — toca para bloquear la edición' : 'Solo lectura — toca para editar';
+}
+
+function toggleEditMode() {
+  flushSave();
+  if (canEdit()) {
+    state.readMode = true; state.editId = null;
+    el.editor.blur();
+    toast('Modo lectura: las notas no se pueden editar sin querer');
+  } else {
+    state.readMode = false;
+    toast('Modo edición');
+  }
+  try { localStorage.setItem('apuntes_read_mode', state.readMode ? '1' : '0'); } catch { /* nada */ }
+  applyEditMode();
 }
 
 function closeNote() {
@@ -695,6 +786,7 @@ async function newNote(fromTemplate = null) {
   if (v.type === 'trash' || (fromTemplate && v.type === 'templates')) setView({ type: 'all' });
   await persist('notes', n);
   renderAll();
+  state.editId = n.id;
   await openNote(n.id);
   el.editor.focus();
   const h = el.editor.firstElementChild;
@@ -915,6 +1007,10 @@ async function runImport() {
 function bind() {
   el.setupForm.addEventListener('submit', (e) => { e.preventDefault(); handleAuth('login'); });
   $('#btnSignup').onclick = () => handleAuth('signup');
+  $('#btnForgot').onclick = forgotPassword;
+  $('#btnEdit').onclick = toggleEditMode;
+  $('#pwForm').addEventListener('submit', savePassword);
+  $('#pwCancel').onclick = (e) => { e.preventDefault(); $('#dlgPassword').close(); };
   $('#btnLocal').onclick = () => {
     if (!confirm('Modo local: las notas quedan solo en este dispositivo y no se sincronizan. ¿Continuar?')) return;
     localStorage.setItem('apuntes_local_only', '1');
@@ -1032,7 +1128,7 @@ function bind() {
     scheduleSave();
   });
   el.editor.addEventListener('click', (e) => {
-    if (handleChecklistClick(e, el.editor)) { scheduleSave(); return; }
+    if (canEdit() && handleChecklistClick(e, el.editor)) { scheduleSave(); return; }
     const img = e.target.closest('img');
     if (img && img.src && !img.classList.contains('loading')) { e.preventDefault(); openLightbox(img.src); return; }
     const a = e.target.closest('a');
@@ -1140,6 +1236,10 @@ function bind() {
     $('#setLogout').textContent = state.mode === 'cloud' ? 'Cerrar sesión' : 'Conectar a la nube';
     $('#dlgSettings').showModal();
   };
+  $('#setPassword').onclick = () => {
+    if (state.mode !== 'cloud' || !sync.getUser()) { toast('Primero inicia sesión en la nube'); return; }
+    $('#dlgSettings').close(); askNewPassword(false);
+  };
   $('#setSync').onclick = () => { if (state.mode === 'cloud') { sync.syncNow(); toast('Sincronizando…'); } else toast('Modo local'); };
   $('#setImport').onclick = () => { $('#dlgSettings').close(); $('#impStatus').textContent = ''; $('#dlgImport').showModal(); };
   $('#impRun').onclick = runImport;
@@ -1168,6 +1268,7 @@ function bind() {
   document.addEventListener('keydown', (e) => {
     if (e.altKey && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); newNote(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); el.search.focus(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E') && state.currentId) { e.preventDefault(); toggleEditMode(); }
   });
 }
 
