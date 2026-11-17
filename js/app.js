@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.4.1';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -37,8 +37,10 @@ const state = {
   openNbs: new Set(JSON.parse(localStorage.getItem('apuntes_open_nbs') || '[]')),
   mode: 'local', // 'cloud' | 'local'
   // Lápiz: modo lectura (no se puede editar sin querer). Se recuerda en cada equipo.
-  readMode: localStorage.getItem('apuntes_read_mode') === '1',
-  editId: null, // nota recién creada: se puede escribir aunque esté el modo lectura
+  // Lápiz: toda nota que se abre queda bloqueada; se edita solo la nota desbloqueada con el lápiz
+  // (o la recién creada). Al abrir otra nota, se vuelve a bloquear.
+  editId: null,
+  freshId: null, // nota recién creada en esta sesión: va primera en la lista
 };
 
 // ---------------- Utilidades ----------------
@@ -469,7 +471,9 @@ function viewNotes() {
     created: (a, b) => b.created_at - a.created_at,
     title: (a, b) => collator.compare(a.title || '', b.title || ''),
   }[state.sort];
-  return list.sort((a, b) => (v.type !== 'trash' && (b.pinned - a.pinned)) || by(a, b));
+  // La nota recién creada va arriba de todo (incluso sobre las ancladas) mientras dure la sesión.
+  const top = (n) => (v.type !== 'trash' && n.id === state.freshId ? 2 : 0) + (v.type !== 'trash' && n.pinned ? 1 : 0);
+  return list.sort((a, b) => (top(b) - top(a)) || by(a, b));
 }
 
 function viewTitle() {
@@ -636,7 +640,7 @@ async function openNote(id, { keepView = false } = {}) {
 function canEdit() {
   const n = state.currentId && state.notes.get(state.currentId);
   if (!n || n.trashed) return false;
-  return !state.readMode || state.editId === n.id;
+  return state.editId === n.id;
 }
 
 function applyEditMode() {
@@ -650,21 +654,21 @@ function applyEditMode() {
   b.classList.toggle('hidden', !!n?.trashed);
   b.classList.toggle('on', editable);
   b.setAttribute('aria-pressed', String(editable));
-  b.title = editable ? 'Editando — toca para bloquear la edición' : 'Solo lectura — toca para editar';
+  b.title = editable ? 'Editando — toca para bloquear (Ctrl+E)' : 'Bloqueada para no editar sin querer — toca para editar (Ctrl+E)';
 }
 
 function toggleEditMode() {
   flushSave();
   if (canEdit()) {
-    state.readMode = true; state.editId = null;
+    state.editId = null;
     el.editor.blur();
-    toast('Modo lectura: las notas no se pueden editar sin querer');
+    toast('Nota bloqueada');
   } else {
-    state.readMode = false;
-    toast('Modo edición');
+    state.editId = state.currentId;
+    toast('Editando esta nota');
   }
-  try { localStorage.setItem('apuntes_read_mode', state.readMode ? '1' : '0'); } catch { /* nada */ }
   applyEditMode();
+  if (canEdit()) el.editor.focus();
 }
 
 // ---------------- Tamaño de imágenes ----------------
@@ -955,6 +959,7 @@ async function newNote(fromTemplate = null) {
     if (v.type === 'notebook' && !n.notebook_ids.length) n.notebook_ids = [v.id];
   }
   if (v.type === 'trash' || (fromTemplate && v.type === 'templates')) setView({ type: 'all' });
+  state.freshId = n.id;
   await persist('notes', n);
   renderAll();
   state.editId = n.id;
