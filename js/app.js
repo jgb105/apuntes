@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.4.1';
+export const APP_VERSION = '1.4.2';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -40,7 +40,6 @@ const state = {
   // Lápiz: toda nota que se abre queda bloqueada; se edita solo la nota desbloqueada con el lápiz
   // (o la recién creada). Al abrir otra nota, se vuelve a bloquear.
   editId: null,
-  freshId: null, // nota recién creada en esta sesión: va primera en la lista
 };
 
 // ---------------- Utilidades ----------------
@@ -471,9 +470,7 @@ function viewNotes() {
     created: (a, b) => b.created_at - a.created_at,
     title: (a, b) => collator.compare(a.title || '', b.title || ''),
   }[state.sort];
-  // La nota recién creada va arriba de todo (incluso sobre las ancladas) mientras dure la sesión.
-  const top = (n) => (v.type !== 'trash' && n.id === state.freshId ? 2 : 0) + (v.type !== 'trash' && n.pinned ? 1 : 0);
-  return list.sort((a, b) => (top(b) - top(a)) || by(a, b));
+  return list.sort((a, b) => (v.type !== 'trash' && (b.pinned - a.pinned)) || by(a, b));
 }
 
 function viewTitle() {
@@ -959,7 +956,6 @@ async function newNote(fromTemplate = null) {
     if (v.type === 'notebook' && !n.notebook_ids.length) n.notebook_ids = [v.id];
   }
   if (v.type === 'trash' || (fromTemplate && v.type === 'templates')) setView({ type: 'all' });
-  state.freshId = n.id;
   await persist('notes', n);
   renderAll();
   state.editId = n.id;
