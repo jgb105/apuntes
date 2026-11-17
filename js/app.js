@@ -6,7 +6,7 @@ import { sanitize, serialize, runCommand, handleChecklistClick, fixNewChecklistI
 import { firstLine } from './importer.js';
 import { PRESETS, presetURL, squareImage } from './covers.js';
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 
 const $ = (s) => document.querySelector(s);
 const el = {
@@ -285,7 +285,26 @@ async function startApp(offlineFallback = false) {
   addEventListener('pagehide', flushSave);
   if (tabs) tabs.onmessage = (e) => { if (e.data?.type === 'changed') onRemoteChange(); };
   const last = localStorage.getItem('apuntes_last_note');
-  if (!isNarrow() && last && state.notes.get(last) && isAlive(state.notes.get(last))) openNote(last);
+  if (wantsNewNote(location.href)) {
+    history.replaceState(history.state, '', location.pathname);
+    newFromLaunch();
+  } else if (!isNarrow() && last && state.notes.get(last) && isAlive(state.notes.get(last))) openNote(last);
+  // App instalada: el acceso "Nueva nota" del ícono reutiliza la ventana abierta.
+  if ('launchQueue' in window) {
+    window.launchQueue.setConsumer((p) => { if (p?.targetURL && wantsNewNote(p.targetURL)) newFromLaunch(); });
+  }
+}
+
+// Al abrir en frío llegan la URL y el launchQueue a la vez: crear una sola nota.
+let lastLaunchNew = 0;
+function newFromLaunch() {
+  if (Date.now() - lastLaunchNew < 3000) return;
+  lastLaunchNew = Date.now();
+  newNote();
+}
+
+function wantsNewNote(url) {
+  try { return new URL(url).searchParams.has('nueva'); } catch { return false; }
 }
 
 function enableCloud() {
@@ -596,6 +615,7 @@ async function openNote(id, { keepView = false } = {}) {
   el.editor.innerHTML = sanitize(n.html);
   hydrateFiles(el.editor);
   if (state.editId !== id) state.editId = null;
+  hideImageTools();
   applyEditMode();
   el.trashBanner.classList.toggle('hidden', !n.trashed);
   $('#tplBanner').classList.toggle('hidden', !isTemplate(n) || !!n.trashed);
@@ -622,6 +642,7 @@ function canEdit() {
 function applyEditMode() {
   const n = state.currentId && state.notes.get(state.currentId);
   const editable = canEdit();
+  if (!editable) hideImageTools();
   el.editor.contentEditable = editable ? 'true' : 'false';
   el.editorPane.classList.toggle('reading', !editable);
   el.toolbar.classList.toggle('hidden', !editable);
@@ -644,6 +665,156 @@ function toggleEditMode() {
   }
   try { localStorage.setItem('apuntes_read_mode', state.readMode ? '1' : '0'); } catch { /* nada */ }
   applyEditMode();
+}
+
+// ---------------- Tamaño de imágenes ----------------
+// Clic en una imagen (modo edición): aparece un marco con tamaños rápidos y un punto para arrastrar.
+// El tamaño se guarda en la nota como porcentaje del ancho, así se ve proporcional en PC y celular.
+let selImg = null;
+let imgTools = null;
+
+function setupImageTools() {
+  imgTools = document.createElement('div');
+  imgTools.className = 'img-tools hidden';
+  imgTools.innerHTML = `<div class="img-bar" role="toolbar" aria-label="Tamaño de la imagen">
+      <button data-w="25" title="Pequeña">S</button><button data-w="50" title="Mediana">M</button>
+      <button data-w="75" title="Grande">L</button><button data-w="100" title="Todo el ancho">Ancho</button>
+      <button data-w="0" title="Tamaño original">Original</button><span class="pct"></span>
+      <button data-act="view" title="Ver en grande (doble clic)" aria-label="Ver en grande">⤢</button>
+      <button data-act="del" title="Quitar imagen" aria-label="Quitar imagen">🗑</button>
+    </div><span class="img-handle" title="Arrastra para cambiar el tamaño"></span>`;
+  el.editorScroll.appendChild(imgTools);
+  imgTools.addEventListener('mousedown', (e) => e.preventDefault()); // no quitar el cursor del texto
+  imgTools.querySelector('.img-bar').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || !selImg) return;
+    if (b.dataset.act === 'view') { const src = selImg.src; hideImageTools(); if (src) openLightbox(src); return; }
+    if (b.dataset.act === 'del') { const i = selImg; hideImageTools(); i.remove(); scheduleSave(); return; }
+    setImageWidth(selImg, Number(b.dataset.w));
+    scheduleSave();
+  });
+  const handle = imgTools.querySelector('.img-handle');
+  handle.addEventListener('pointerdown', (e) => {
+    if (!selImg) return;
+    e.preventDefault(); e.stopPropagation();
+    handle.setPointerCapture(e.pointerId);
+    const img = selImg;
+    const base = contentWidth(img.parentElement) || el.editor.clientWidth;
+    const startX = e.clientX, startW = img.getBoundingClientRect().width;
+    const move = (ev) => {
+      const w = Math.min(base, Math.max(40, startW + ev.clientX - startX));
+      img.style.width = `${Math.round(w / base * 100)}%`;
+      placeImageTools();
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+      scheduleSave();
+    };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!selImg || imgTools.contains(e.target) || e.target === selImg) return;
+    hideImageTools();
+  }, true);
+  el.editor.addEventListener('input', () => { if (selImg) { if (!el.editor.contains(selImg)) hideImageTools(); else placeImageTools(); } });
+  window.addEventListener('resize', () => selImg && placeImageTools());
+}
+
+function contentWidth(node) {
+  if (!node) return 0;
+  const cs = getComputedStyle(node);
+  return node.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+}
+
+function setImageWidth(img, pct) {
+  if (pct > 0) img.style.width = `${pct}%`;
+  else { img.style.removeProperty('width'); if (!img.getAttribute('style')) img.removeAttribute('style'); }
+  img.removeAttribute('width'); img.removeAttribute('height');
+  placeImageTools();
+}
+
+function selectImage(img) {
+  selImg = img;
+  imgTools.classList.remove('hidden');
+  placeImageTools();
+}
+
+function hideImageTools() {
+  selImg = null;
+  imgTools?.classList.add('hidden');
+}
+
+function placeImageTools() {
+  if (!selImg) return;
+  const r = selImg.getBoundingClientRect(), sr = el.editorScroll.getBoundingClientRect();
+  Object.assign(imgTools.style, {
+    top: `${r.top - sr.top + el.editorScroll.scrollTop}px`, left: `${r.left - sr.left + el.editorScroll.scrollLeft}px`,
+    width: `${r.width}px`, height: `${r.height}px`,
+  });
+  imgTools.classList.toggle('below', r.top - sr.top < 48);
+  const cur = /^(\d+)%$/.exec(selImg.style.width || '')?.[1];
+  const base = contentWidth(selImg.parentElement) || el.editor.clientWidth;
+  imgTools.querySelector('.pct').textContent = `${cur || Math.round(r.width / base * 100)}%`;
+  for (const b of imgTools.querySelectorAll('[data-w]')) b.classList.toggle('on', b.dataset.w === (cur || '0'));
+}
+
+// ---------------- Paneles: cambiar ancho, ocultar menú lateral y modo enfoque ----------------
+const PANES = { side: ['--side-w', 'apuntes_side_w', 248, 180, 420], list: ['--list-w', 'apuntes_list_w', 320, 240, 600] };
+
+function setupPanes() {
+  for (const [, [v, key, def]] of Object.entries(PANES)) {
+    const w = parseInt(localStorage.getItem(key), 10);
+    el.app.style.setProperty(v, `${Number.isFinite(w) ? w : def}px`);
+  }
+  el.app.classList.toggle('side-hidden', localStorage.getItem('apuntes_side_hidden') === '1');
+  el.app.classList.toggle('focus', localStorage.getItem('apuntes_focus') === '1');
+  syncPaneButtons();
+  for (const r of document.querySelectorAll('.resizer')) {
+    const [v, key, def, min, max] = PANES[r.dataset.resize];
+    const pane = r.parentElement;
+    r.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      r.setPointerCapture(e.pointerId);
+      const left = pane.getBoundingClientRect().left;
+      el.app.classList.add('resizing');
+      const move = (ev) => {
+        const w = Math.round(Math.min(max, Math.max(min, ev.clientX - left)));
+        el.app.style.setProperty(v, `${w}px`);
+        localStorage.setItem(key, String(w));
+        if (selImg) placeImageTools();
+      };
+      const up = () => {
+        el.app.classList.remove('resizing');
+        r.removeEventListener('pointermove', move); r.removeEventListener('pointerup', up); r.removeEventListener('pointercancel', up);
+      };
+      r.addEventListener('pointermove', move); r.addEventListener('pointerup', up); r.addEventListener('pointercancel', up);
+    });
+    r.addEventListener('dblclick', () => { el.app.style.setProperty(v, `${def}px`); localStorage.removeItem(key); });
+  }
+  $('#btnSide').onclick = () => togglePane('side');
+  $('#btnFocus').onclick = () => togglePane('focus');
+}
+
+function togglePane(which) {
+  if (which === 'side') {
+    if (el.app.classList.contains('focus')) { el.app.classList.remove('focus'); localStorage.setItem('apuntes_focus', '0'); }
+    else if (matchMedia('(max-width: 1100px)').matches) { el.app.classList.toggle('nav-open'); return; }
+    else localStorage.setItem('apuntes_side_hidden', el.app.classList.toggle('side-hidden') ? '1' : '0');
+  } else {
+    localStorage.setItem('apuntes_focus', el.app.classList.toggle('focus') ? '1' : '0');
+  }
+  syncPaneButtons();
+  if (selImg) requestAnimationFrame(placeImageTools);
+}
+
+function syncPaneButtons() {
+  const f = el.app.classList.contains('focus');
+  const b = $('#btnFocus');
+  b.classList.toggle('on', f);
+  b.setAttribute('aria-pressed', String(f));
+  b.title = f ? 'Mostrar los menús (Ctrl+Shift+F)' : 'Pantalla completa de la nota: oculta los menús (Ctrl+Shift+F)';
+  const sh = el.app.classList.contains('side-hidden');
+  $('#btnSide').title = sh ? 'Mostrar el menú lateral (Ctrl+\\)' : 'Ocultar el menú lateral (Ctrl+\\)';
 }
 
 function closeNote() {
@@ -1061,6 +1232,9 @@ function bind() {
   el.search.addEventListener('input', () => { state.query = el.search.value; renderList(); });
   el.sort.addEventListener('change', () => { state.sort = el.sort.value; localStorage.setItem('apuntes_sort', state.sort); renderList(); });
   $('#btnNewNote').onclick = newNote;
+  $('#btnNewNote2').onclick = () => newNote();
+  setupPanes();
+  setupImageTools();
   const backToList = async () => { await flushSave(true); el.app.dataset.view = 'list'; state.currentId = null; el.editorPane.classList.remove('has-note'); renderList(); };
   $('#btnBack').onclick = () => { if (history.state?.apuntes === 'editor') history.back(); else backToList(); };
   addEventListener('popstate', () => {
@@ -1130,6 +1304,7 @@ function bind() {
   el.editor.addEventListener('click', (e) => {
     if (canEdit() && handleChecklistClick(e, el.editor)) { scheduleSave(); return; }
     const img = e.target.closest('img');
+    if (img && canEdit()) { e.preventDefault(); selectImage(img); return; }
     if (img && img.src && !img.classList.contains('loading')) { e.preventDefault(); openLightbox(img.src); return; }
     const a = e.target.closest('a');
     if (!a) return;
@@ -1140,7 +1315,15 @@ function bind() {
       e.preventDefault(); open(a.href, '_blank', 'noopener');
     }
   });
+  el.editor.addEventListener('dblclick', (e) => {
+    const img = e.target.closest('img');
+    if (img && img.src && !img.classList.contains('loading')) { e.preventDefault(); hideImageTools(); openLightbox(img.src); }
+  });
   el.editor.addEventListener('keydown', (e) => {
+    if (selImg) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && canEdit()) { e.preventDefault(); const i = selImg; hideImageTools(); i.remove(); scheduleSave(); return; }
+      hideImageTools();
+    }
     if (e.key === 'Tab' && closestIn(e.target === el.editor ? getSelection().anchorNode : e.target, 'li', el.editor)) {
       e.preventDefault();
       document.execCommand(e.shiftKey ? 'outdent' : 'indent');
@@ -1267,6 +1450,8 @@ function bind() {
   // Atajos de teclado
   document.addEventListener('keydown', (e) => {
     if (e.altKey && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); newNote(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); togglePane('side'); }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); togglePane('focus'); }
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); el.search.focus(); }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E') && state.currentId) { e.preventDefault(); toggleEditMode(); }
   });

@@ -236,7 +236,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .dates { width: 100%; font-size: 11.5px; color: var(--muted); margin: 10px 0 0; }
 .editor-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--surface); }
 .editor-pane.has-note .editor-empty { display: none; }
-.editor-pane:not(.has-note) .toolbar, .editor-pane:not(.has-note) .editor-head > :not(#btnBack) { visibility: hidden; }
+.editor-pane:not(.has-note) .toolbar, .editor-pane:not(.has-note) .editor-head > :not(#btnBack):not(#btnNewNote2):not(#btnFocus) { visibility: hidden; }
 .trash-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; background: var(--panel); font-size: 13px; }
 .trash-banner span { flex: 1; }
 
@@ -403,7 +403,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   .save-state { display: none; }
   .editor { padding: 16px 18px 10px; font-size: 17px; }
   .editor h1 { font-size: 1.6em; }
-  .editor img.wide { width: 100% !important; }
+  .editor img.wide:not([style*="width"]) { width: 100% !important; }
   .note-foot { padding: 6px 18px 40px; }
   .editor-scroll { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
   .toolbar {
@@ -434,3 +434,47 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 /* Nota nueva: texto guía mientras está vacía */
 .editor.empty > :first-child::before { content: "Título"; color: var(--muted); opacity: .6; pointer-events: none; }
 .editor.empty::after { content: "Escribe aquí…"; display: block; color: var(--muted); opacity: .5; margin-top: .4em; pointer-events: none; }
+
+
+/* ---------- 1.4: paneles ajustables, modo enfoque y tamaño de imágenes ---------- */
+@media (min-width: 1101px) { .sidebar { position: relative; } }
+.resizer { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 6; touch-action: none; }
+.resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background .15s; }
+.resizer:hover::after, .app.resizing .resizer::after { background: var(--accent); width: 2px; }
+.app.resizing { cursor: col-resize; user-select: none; }
+#btnSide { display: none; }
+#btnNewNote2 { margin-left: 6px; white-space: nowrap; }
+#btnFocus.on { color: var(--accent); }
+@media (min-width: 1101px) {
+  #btnSide { display: inline-grid; }
+  .app.side-hidden { grid-template-columns: var(--list-w) minmax(0, 1fr); }
+  .app.side-hidden .sidebar { display: none; }
+}
+@media (min-width: 761px) {
+  .app.focus { grid-template-columns: minmax(0, 1fr); }
+  .app.focus .sidebar, .app.focus .list-pane { display: none; }
+  .app.focus #btnSide { display: none; }
+}
+@media (max-width: 1100px) { .resizer[data-resize="side"] { display: none; } }
+@media (max-width: 760px) { .resizer { display: none; } }
+
+.editor-scroll { position: relative; }
+.img-tools { position: absolute; z-index: 8; pointer-events: none; outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+.img-tools.hidden { display: none; }
+.img-bar {
+  position: absolute; left: 0; top: -40px; display: flex; gap: 2px; padding: 3px; pointer-events: auto; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
+}
+.img-tools.below .img-bar { top: auto; bottom: -40px; }
+.img-bar button { border: none; background: none; color: var(--text); font-size: 13px; padding: 5px 9px; border-radius: 6px; min-height: 28px; }
+.img-bar button:hover { background: var(--hover); }
+.img-bar button.on { color: var(--accent); font-weight: 650; }
+.img-bar .pct { font-size: 12px; color: var(--muted); padding: 0 6px; align-self: center; min-width: 38px; text-align: center; }
+.img-handle {
+  position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px; border-radius: 50%; pointer-events: auto; touch-action: none;
+  background: var(--accent); border: 3px solid var(--surface); box-shadow: var(--shadow); cursor: nwse-resize;
+}
+@media (max-width: 760px) {
+  .img-handle { width: 26px; height: 26px; right: -13px; bottom: -13px; }
+  .img-bar button { padding: 7px 9px; }
+}
